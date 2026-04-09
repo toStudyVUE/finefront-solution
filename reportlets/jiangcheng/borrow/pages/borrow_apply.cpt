@@ -44,6 +44,9 @@
             return '/' + parts[1] + '/' + parts[2];
         })(),
 
+        // 静态资源路径
+        libBase: '/webroot/help/lib/',
+
         // 数据层模板路径（展示层在pages/，数据层在data/）
         getDataTemplate: function(filename) {
             return this.currentDir.replace('/pages/', '/data/') + filename;
@@ -52,6 +55,15 @@
         // 同目录模板路径
         getTemplatePath: function(filename) {
             return this.currentDir + filename;
+        },
+
+        // 获取当前用户ID
+        getCurrentUserId: function() {
+            try {
+                return FR.remoteEvaluate("=$fr_username") || 'anonymous';
+            } catch (e) {
+                return 'anonymous';
+            }
         }
     };
 
@@ -384,7 +396,7 @@
             '<input type="text" class="ad-input" id="inputEquipmentName" placeholder="点击选择按钮选择设备" readonly>' +
             '<input type="hidden" id="inputEquipmentId">' +
             '<input type="hidden" id="inputAssetNo">' +
-            '<button class="ad-btn ad-btn-primary" onclick="openSelector()">选择</button>' +
+            '<button class="ad-btn ad-btn-primary" id="btnSelectEquipment" onclick="openSelector()">选择</button>' +
             '</div>' +
             '</div>' +
             '<div class="ad-row">' +
@@ -465,6 +477,186 @@
     }
 
     init();
+
+    // ==================== 引导功能 ====================
+    var GUIDE_ID = 'guide_borrow_apply';
+    var driverInstance = null;
+
+    function initGuideFeature() {
+        // 添加引导按钮
+        addGuideButton();
+        // 检查首次访问
+        checkAndShowGuideBubble();
+    }
+
+    function addGuideButton() {
+        var btn = document.createElement('button');
+        btn.id = 'btnGuide';
+        btn.className = 'ad-btn ad-btn-default';
+        btn.style.cssText = 'margin-left:auto;font-size:12px;padding:2px 8px;';
+        btn.innerHTML = '📖 引导';
+        btn.title = '查看操作引导';
+        btn.onclick = function() { loadDriverAndStart(); };
+
+        var title = document.querySelector('.ad-form-title');
+        if (title) {
+            title.parentNode.style.display = 'flex';
+            title.parentNode.style.alignItems = 'center';
+            title.parentNode.appendChild(btn);
+        }
+    }
+
+    function checkAndShowGuideBubble() {
+        checkGuideRead(function(hasRead) {
+            if (!hasRead) {
+                showGuideBubble();
+            }
+        });
+    }
+
+    function showGuideBubble() {
+        var bubble = document.createElement('div');
+        bubble.id = 'guideBubble';
+        bubble.innerHTML = '<span style="margin-right:8px;">✨ 首次使用?</span><span style="text-decoration:underline;cursor:pointer;">查看引导</span>';
+        bubble.style.cssText = 'position:fixed;top:16px;right:16px;background:#1677ff;color:#fff;padding:8px 14px;border-radius:6px;font-size:12px;z-index:10001;box-shadow:0 2px 8px rgba(22,119,255,.3);cursor:pointer;';
+        bubble.onclick = function() {
+            document.body.removeChild(bubble);
+            loadDriverAndStart();
+        };
+        document.body.appendChild(bubble);
+        setTimeout(function() {
+            if (document.getElementById('guideBubble')) {
+                document.body.removeChild(bubble);
+                showGuideBadge();
+            }
+        }, 8000);
+    }
+
+    function showGuideBadge() {
+        var btn = document.getElementById('btnGuide');
+        if (btn) {
+            var badge = document.createElement('span');
+            badge.id = 'guideBadge';
+            badge.style.cssText = 'position:absolute;top:-3px;right:-3px;width:6px;height:6px;background:#ff4d4f;border-radius:50%;';
+            btn.style.position = 'relative';
+            btn.appendChild(badge);
+        }
+    }
+
+    function hideGuideBadge() {
+        var badge = document.getElementById('guideBadge');
+        if (badge) badge.parentNode.removeChild(badge);
+    }
+
+    function loadDriverAndStart() {
+        hideGuideBadge();
+        if (typeof window.driver !== 'undefined') {
+            startGuide();
+            return;
+        }
+        if (!document.getElementById('driverCss')) {
+            var link = document.createElement('link');
+            link.id = 'driverCss';
+            link.rel = 'stylesheet';
+            link.href = PATH.libBase + 'driver/driver.min.css';
+            document.head.appendChild(link);
+        }
+        var script = document.createElement('script');
+        script.src = PATH.libBase + 'driver/driver.min.js';
+        script.onload = startGuide;
+        document.head.appendChild(script);
+    }
+
+    function startGuide() {
+        if (typeof window.driver === 'undefined') return;
+        driverInstance = window.driver.createDriver({
+            animate: true,
+            showProgress: true,
+            progressText: '{{current}} / {{total}}',
+            nextBtnText: '下一步',
+            prevBtnText: '上一步',
+            doneBtnText: '完成'
+        });
+        driverInstance.defineSteps([
+            {
+                popover: {
+                    title: '借用申请',
+                    description: '填写借用信息，选择要借用的设备，设置借用和归还日期。',
+                    side: 'bottom',
+                    align: 'center'
+                }
+            },
+            {
+                element: '#inputUserName',
+                popover: { title: '借用人信息', description: '填写借用人姓名和所属部门。', side: 'right' }
+            },
+            {
+                element: '#btnSelectEquipment',
+                popover: { title: '选择设备', description: '点击打开设备选择器，选择要借用的设备。', side: 'right' }
+            },
+            {
+                element: '#inputBorrowDate',
+                popover: { title: '借用日期', description: '选择借用日期和预计归还日期。', side: 'right' }
+            },
+            {
+                element: '#btnSubmit',
+                popover: { title: '提交申请', description: '确认信息无误后点击提交，系统将自动生成借用单号。', side: 'top' }
+            }
+        ]);
+        driverInstance.drive();
+        var checkInterval = setInterval(function() {
+            if (!document.querySelector('.driver-active-element')) {
+                clearInterval(checkInterval);
+                markGuideRead();
+            }
+        }, 500);
+    }
+
+    function checkGuideRead(callback) {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_get',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID }
+                ]
+            }),
+            success: function(res) {
+                try {
+                    var data = typeof res === 'string' ? JSON.parse(res) : res;
+                    callback(data.data && data.data.length > 0);
+                } catch (e) { callback(false); }
+            },
+            error: function() { callback(false); }
+        });
+    }
+
+    function markGuideRead() {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_set',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID },
+                    { name: 'p_value', type: 'String', value: 'true' }
+                ]
+            })
+        });
+    }
+
+    setTimeout(initGuideFeature, 500);
 })();
 ]]>
 </Content>

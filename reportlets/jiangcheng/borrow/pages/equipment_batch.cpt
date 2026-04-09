@@ -44,9 +44,21 @@
             return '/' + parts[1] + '/' + parts[2];
         })(),
 
+        // 静态资源路径
+        libBase: '/webroot/help/lib/',
+
         // 数据层模板路径（展示层在pages/，数据层在data/）
         getDataTemplate: function(filename) {
             return this.currentDir.replace('/pages/', '/data/') + filename;
+        },
+
+        // 获取当前用户ID
+        getCurrentUserId: function() {
+            try {
+                return FR.remoteEvaluate("=$fr_username") || 'anonymous';
+            } catch (e) {
+                return 'anonymous';
+            }
         }
     };
 
@@ -807,6 +819,180 @@
     }
 
     init();
+
+    // ==================== 引导功能 ====================
+    var GUIDE_ID = 'guide_equipment_batch';
+    var driverInstance = null;
+
+    function initGuideFeature() {
+        addGuideButton();
+        checkAndShowGuideBubble();
+    }
+
+    function addGuideButton() {
+        var btn = document.createElement('button');
+        btn.id = 'btnGuide';
+        btn.className = 'batch-btn batch-btn-default';
+        btn.style.cssText = 'margin-left:auto;font-size:12px;padding:4px 12px;';
+        btn.innerHTML = '📖 引导';
+        btn.title = '查看操作引导';
+        btn.onclick = function() { loadDriverAndStart(); };
+
+        var title = document.querySelector('.batch-title');
+        if (title) {
+            title.parentNode.style.display = 'flex';
+            title.parentNode.style.alignItems = 'center';
+            title.parentNode.appendChild(btn);
+        }
+    }
+
+    function checkAndShowGuideBubble() {
+        checkGuideRead(function(hasRead) {
+            if (!hasRead) showGuideBubble();
+        });
+    }
+
+    function showGuideBubble() {
+        var bubble = document.createElement('div');
+        bubble.id = 'guideBubble';
+        bubble.innerHTML = '<span style="margin-right:8px;">✨ 首次使用?</span><span style="text-decoration:underline;cursor:pointer;">查看引导</span>';
+        bubble.style.cssText = 'position:fixed;top:16px;right:16px;background:#1677ff;color:#fff;padding:8px 14px;border-radius:6px;font-size:12px;z-index:10001;box-shadow:0 2px 8px rgba(22,119,255,.3);cursor:pointer;';
+        bubble.onclick = function() {
+            document.body.removeChild(bubble);
+            loadDriverAndStart();
+        };
+        document.body.appendChild(bubble);
+        setTimeout(function() {
+            if (document.getElementById('guideBubble')) {
+                document.body.removeChild(bubble);
+                showGuideBadge();
+            }
+        }, 10000);
+    }
+
+    function showGuideBadge() {
+        var btn = document.getElementById('btnGuide');
+        if (btn) {
+            var badge = document.createElement('span');
+            badge.id = 'guideBadge';
+            badge.style.cssText = 'position:absolute;top:-3px;right:-3px;width:6px;height:6px;background:#ff4d4f;border-radius:50%;';
+            btn.style.position = 'relative';
+            btn.appendChild(badge);
+        }
+    }
+
+    function hideGuideBadge() {
+        var badge = document.getElementById('guideBadge');
+        if (badge) badge.parentNode.removeChild(badge);
+    }
+
+    function loadDriverAndStart() {
+        hideGuideBadge();
+        if (typeof window.driver !== 'undefined') {
+            startGuide();
+            return;
+        }
+        if (!document.getElementById('driverCss')) {
+            var link = document.createElement('link');
+            link.id = 'driverCss';
+            link.rel = 'stylesheet';
+            link.href = PATH.libBase + 'driver/driver.min.css';
+            document.head.appendChild(link);
+        }
+        var script = document.createElement('script');
+        script.src = PATH.libBase + 'driver/driver.min.js';
+        script.onload = startGuide;
+        document.head.appendChild(script);
+    }
+
+    function startGuide() {
+        if (typeof window.driver === 'undefined') return;
+        driverInstance = window.driver.createDriver({
+            animate: true,
+            showProgress: true,
+            progressText: '{{current}} / {{total}}',
+            nextBtnText: '下一步',
+            prevBtnText: '上一步',
+            doneBtnText: '完成'
+        });
+        driverInstance.defineSteps([
+            {
+                popover: {
+                    title: '批量导入设备',
+                    description: '通过Excel批量导入设备数据，适合一次性添加大量设备。按照以下步骤操作。',
+                    side: 'bottom',
+                    align: 'center'
+                }
+            },
+            {
+                element: '#uploadArea',
+                popover: { title: '步骤1：上传文件', description: '点击或拖拽Excel文件到此区域上传。支持.xlsx和.xls格式。', side: 'bottom' }
+            },
+            {
+                element: '#batchBody',
+                popover: { title: '步骤2：预览数据', description: '上传后预览数据，检查是否有错误。错误数据会标红显示。', side: 'top' }
+            },
+            {
+                popover: { title: '步骤3：校验数据', description: '点击"下一步"后系统自动校验数据格式和完整性，生成校验报告。', side: 'bottom', align: 'center' }
+            },
+            {
+                popover: { title: '步骤4：确认导入', description: '校验通过后点击"确认导入"完成批量导入。如有错误可选择"仅导入正确行"。', side: 'bottom', align: 'center' }
+            }
+        ]);
+        driverInstance.drive();
+        var checkInterval = setInterval(function() {
+            if (!document.querySelector('.driver-active-element')) {
+                clearInterval(checkInterval);
+                markGuideRead();
+            }
+        }, 500);
+    }
+
+    function checkGuideRead(callback) {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_get',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID }
+                ]
+            }),
+            success: function(res) {
+                try {
+                    var data = typeof res === 'string' ? JSON.parse(res) : res;
+                    callback(data.data && data.data.length > 0);
+                } catch (e) { callback(false); }
+            },
+            error: function() { callback(false); }
+        });
+    }
+
+    function markGuideRead() {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_set',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID },
+                    { name: 'p_value', type: 'String', value: 'true' }
+                ]
+            })
+        });
+    }
+
+    setTimeout(initGuideFeature, 800);
 })();
 ]]>
 </Content>
