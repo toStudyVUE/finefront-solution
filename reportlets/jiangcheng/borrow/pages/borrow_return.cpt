@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<ToolBars/>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * 设备归还弹窗
+ * 功能：加载借用记录详情，提交归还
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        // 当前模板目录
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+
+        // API基础路径：从servletURL截取前两级
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })(),
+
+        // 数据层模板路径（展示层在pages/，数据层在data/）
+        getDataTemplate: function(filename) {
+            return this.currentDir.replace('/pages/', '/data/') + filename;
+        }
+    };
+
+    // 隐藏帆软报表容器
+    var style = document.createElement('style');
+    style.innerHTML = '.fr-report{position:absolute;left:-9999px;visibility:hidden}.content-container{height:0!important;overflow:hidden}';
+    document.head.appendChild(style);
+
+    // 获取URL参数
+    function getUrlParam(name) {
+        var reg = new RegExp('(^|&)' + name + '=([^&]*)(&|$)');
+        var r = window.location.search.substr(1).match(reg);
+        return r ? decodeURIComponent(r[2]) : '';
+    }
+
+    // 格式化日期
+    function formatDate(dateStr) {
+        if (!dateStr) return '-';
+        var d = new Date(dateStr);
+        var y = d.getFullYear();
+        var m = String(d.getMonth() + 1).padStart(2, '0');
+        var day = String(d.getDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+
+    // 获取今天日期 (YYYY-MM-DD)
+    function getToday() {
+        var d = new Date();
+        var y = d.getFullYear();
+        var m = String(d.getMonth() + 1).padStart(2, '0');
+        var day = String(d.getDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+
+    // 显示结果
+    function showResult(msg, success) {
+        var el = document.getElementById('result');
+        el.textContent = msg;
+        el.className = 'ad-result ' + (success ? 'success' : 'error');
+        el.style.display = 'block';
+        if (success) {
+            // 直接关闭，不等待
+            if (window.parent && window.parent.closeModal) {
+                window.parent.closeModal();
+            }
+        }
+    }
+
+    // 显示加载中
+    function showLoading(show) {
+        var loadingEl = document.getElementById('loadingOverlay');
+        if (loadingEl) {
+            loadingEl.style.display = show ? 'flex' : 'none';
+        }
+        // 同时控制表单内容
+        var formContent = document.getElementById('formContent');
+        if (formContent) {
+            formContent.style.opacity = show ? '0.5' : '1';
+            formContent.style.pointerEvents = show ? 'none' : 'auto';
+        }
+    }
+
+    // 加载详情
+    function loadDetail() {
+        var id = getUrlParam('id');
+        if (!id) {
+            showResult('缺少借用记录ID', false);
+            return;
+        }
+
+        console.log('加载借用记录详情, ID:', id);
+
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: PATH.getDataTemplate('borrow_data.cpt'),
+                datasource_name: 'borrow_by_id',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_id', type: 'String', value: id }
+                ]
+            }),
+            success: function(res) {
+                try {
+                    // 兼容两种响应格式：字符串或对象
+                    var result = typeof res === 'string' ? JSON.parse(res) : res;
+                    console.log('加载结果:', result);
+
+                    // 检查响应结构
+                    if (!result) {
+                        showResult('加载数据失败: 响应为空', false);
+                        return;
+                    }
+
+                    // 处理不同的响应格式
+                    var dataList = null;
+                    if (Array.isArray(result)) {
+                        dataList = result;
+                    } else if (result.data && Array.isArray(result.data)) {
+                        dataList = result.data;
+                    } else if (result.rows && Array.isArray(result.rows)) {
+                        dataList = result.rows;
+                    }
+
+                    if (dataList && dataList.length > 0) {
+                        var data = dataList[0];
+                        // 填充表单（移除viewId，HTML模板中未定义该元素）
+                        document.getElementById('viewUser').textContent = data.user_name || '-';
+                        document.getElementById('viewEquipment').textContent = data.equipment_name || '-';
+                        document.getElementById('viewBorrowDate').textContent = formatDate(data.borrow_date);
+                        document.getElementById('viewExpectedReturn').textContent = formatDate(data.expected_return_date);
+                        document.getElementById('viewStatus').textContent = data.status || '-';
+                        // 状态颜色
+                        var statusEl = document.getElementById('viewStatus');
+                        if (data.status === '借用中') {
+                            statusEl.className = 'ad-status borrowing';
+                        } else if (data.status === '已逾期') {
+                            statusEl.className = 'ad-status overdue';
+                        } else {
+                            statusEl.className = 'ad-status';
+                        }
+                        // 隐藏加载动画，显示表单
+                        document.getElementById('loading').style.display = 'none';
+                        document.getElementById('formContent').style.display = 'block';
+                        showLoading(false);
+                    } else {
+                        showResult('未找到借用记录', false);
+                    }
+                } catch(e) {
+                    console.error('解析响应失败:', e);
+                    console.error('原始响应:', res);
+                    showResult('加载数据失败: ' + e.message, false);
+                }
+            },
+            error: function(xhr, status, error) {
+                console.error('请求失败:', error);
+                showResult('加载数据失败: ' + error, false);
+            }
+        });
+    }
+
+    // 提交归还
+    function doReturn() {
+        var id = getUrlParam('id');
+        var actualReturnDate = document.getElementById('inputActualReturn').value;
+
+        if (!id) {
+            showResult('缺少借用记录ID', false);
+            return;
+        }
+        if (!actualReturnDate) {
+            showResult('请选择实际归还日期', false);
+            return;
+        }
+
+        console.log('提交归还:', { id: id, actualReturnDate: actualReturnDate });
+
+        // 禁用按钮
+        var btn = document.getElementById('btnSubmit');
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+
+        showLoading(true);
+
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: PATH.getDataTemplate('borrow_data.cpt'),
+                datasource_name: 'sp_return_borrow',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_id', type: 'String', value: id },
+                    { name: 'p_actual_return', type: 'String', value: actualReturnDate }
+                ]
+            }),
+            success: function(res) {
+                showLoading(false);
+                try {
+                    var result = JSON.parse(res);
+                    console.log('归还结果:', result);
+                    if (result.data && result.data.length > 0) {
+                        var returnResult = JSON.parse(result.data[0].result);
+                        if (returnResult.success) {
+                            showResult('归还成功！', true);
+                            // 通知父页面刷新列表
+                            if (window.parent && window.parent.refreshList) {
+                                window.parent.refreshList();
+                            }
+                        } else {
+                            showResult('归还失败: ' + (returnResult.message || '未知错误'), false);
+                            btn.disabled = false;
+                            btn.textContent = '确认归还';
+                        }
+                    } else {
+                        showResult('归还失败: 无返回数据', false);
+                        btn.disabled = false;
+                        btn.textContent = '确认归还';
+                    }
+                } catch(e) {
+                    console.error('解析响应失败:', e);
+                    showResult('归还失败: ' + e.message, false);
+                    btn.disabled = false;
+                    btn.textContent = '确认归还';
+                }
+            },
+            error: function(xhr, status, error) {
+                showLoading(false);
+                console.error('请求失败:', error);
+                showResult('归还失败: ' + error, false);
+                btn.disabled = false;
+                btn.textContent = '确认归还';
+            }
+        });
+    }
+
+    // 创建表单容器
+    var container = document.createElement('div');
+    container.id = 'formContainer';
+    container.style.cssText = 'position:relative;z-index:10000;pointer-events:auto';
+    container.innerHTML = '<style>' +
+        '*{box-sizing:border-box;margin:0;padding:0}' +
+        'html,body{height:auto!important;min-height:100%;overflow-y:auto!important;overflow-x:hidden}' +
+        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88)}' +
+        '.ad-wrap{padding:20px;min-height:100vh}' +
+        '.ad-card{max-width:500px;margin:0 auto;background:#fff;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.1);padding:20px}' +
+        '.ad-header{margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid #f0f0f0}' +
+        '.ad-title{font-size:18px;font-weight:600;margin-bottom:4px}' +
+        '.ad-subtitle{font-size:13px;color:#8c8c8c}' +
+        '.ad-info{background:#fafafa;border-radius:6px;padding:12px;margin-bottom:16px}' +
+        '.ad-info-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #e8e8e8}' +
+        '.ad-info-row:last-child{border-bottom:none}' +
+        '.ad-info-label{color:#8c8c8c;font-size:13px}' +
+        '.ad-info-value{font-size:13px;font-weight:500}' +
+        '.ad-status{padding:2px 8px;border-radius:4px;font-size:12px}' +
+        '.ad-status.borrowing{background:#e6f7ff;color:#1890ff}' +
+        '.ad-status.overdue{background:#fff2e8;color:#fa8c16}' +
+        '.ad-group{margin-bottom:16px}' +
+        '.ad-label{display:block;margin-bottom:6px;font-weight:500;font-size:14px}' +
+        '.ad-label .required{color:#ff4d4f}' +
+        '.ad-input{width:100%;height:32px;padding:4px 11px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;outline:none}' +
+        '.ad-input:hover{border-color:#1677ff}' +
+        '.ad-input:focus{border-color:#1677ff;box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+        '.ad-btns{display:flex;gap:12px;margin-top:20px;padding-top:12px;border-top:1px solid #f0f0f0}' +
+        '.ad-btn{flex:1;height:32px;padding:0 15px;font-size:14px;border-radius:6px;border:none;cursor:pointer}' +
+        '.ad-btn-primary{background:#1677ff;color:#fff}' +
+        '.ad-btn-primary:hover{background:#4096ff}' +
+        '.ad-btn-primary:disabled{background:#d9d9d9;cursor:not-allowed}' +
+        '.ad-btn-default{background:#fff;color:#262626;border:1px solid #d9d9d9}' +
+        '.ad-btn-default:hover{color:#1677ff;border-color:#1677ff}' +
+        '.ad-result{margin-top:12px;padding:10px;border-radius:6px;display:none;text-align:center}' +
+        '.ad-result.success{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}' +
+        '.ad-result.error{background:#fff2f0;border:1px solid #ffccc7;color:#ff4d4f}' +
+        '.ad-loading{text-align:center;padding:40px;color:#8c8c8c}' +
+        '.ad-loading-spin{display:inline-block;width:24px;height:24px;border:2px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:spin 0.8s linear infinite}' +
+        '@keyframes spin{to{transform:rotate(360deg)}}' +
+        // 加载遮罩（提交时使用）
+        '.ad-loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.7);display:none;align-items:center;justify-content:center;z-index:1000}' +
+        '.ad-loading-content{background:#fff;padding:24px 32px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.1);display:flex;align-items:center;gap:12px;font-size:14px}' +
+        '.ad-loading-spinner{display:inline-block;width:16px;height:16px;border:2px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:spin 0.8s linear infinite}' +
+        '</style>' +
+        '<div class="ad-wrap">' +
+        '<div class="ad-card">' +
+        '<div class="ad-header">' +
+        '<div class="ad-title">设备归还</div>' +
+        '<div class="ad-subtitle">确认归还设备信息</div>' +
+        '</div>' +
+        '<div id="loading" class="ad-loading"><span class="ad-loading-spin"></span><br><br>加载中...</div>' +
+        '<div id="formContent" style="display:none">' +
+        '<div class="ad-info">' +
+        '<div class="ad-info-row"><span class="ad-info-label">借用人</span><span class="ad-info-value" id="viewUser">-</span></div>' +
+        '<div class="ad-info-row"><span class="ad-info-label">设备名称</span><span class="ad-info-value" id="viewEquipment">-</span></div>' +
+        '<div class="ad-info-row"><span class="ad-info-label">借用日期</span><span class="ad-info-value" id="viewBorrowDate">-</span></div>' +
+        '<div class="ad-info-row"><span class="ad-info-label">预计归还</span><span class="ad-info-value" id="viewExpectedReturn">-</span></div>' +
+        '<div class="ad-info-row"><span class="ad-info-label">当前状态</span><span class="ad-info-value"><span class="ad-status" id="viewStatus">-</span></span></div>' +
+        '</div>' +
+        '<div class="ad-group">' +
+        '<label class="ad-label">实际归还日期<span class="required">*</span></label>' +
+        '<input type="date" class="ad-input" id="inputActualReturn">' +
+        '</div>' +
+        '<div class="ad-btns">' +
+        '<button class="ad-btn ad-btn-default" id="btnCancel">取消</button>' +
+        '<button class="ad-btn ad-btn-primary" id="btnSubmit">确认归还</button>' +
+        '</div>' +
+        '<div class="ad-result" id="result"></div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="ad-loading-overlay" id="loadingOverlay">' +
+        '<div class="ad-loading-content">' +
+        '<span class="ad-loading-spinner"></span>' +
+        '<span>提交中...</span>' +
+        '</div>' +
+        '</div>';
+
+    // 插入到body开头
+    document.body.insertBefore(container, document.body.firstChild);
+
+    // 设置默认日期为今天
+    document.getElementById('inputActualReturn').value = getToday();
+
+    // 绑定事件
+    document.getElementById('btnCancel').onclick = function() {
+        if (window.parent && window.parent.closeModal) {
+            window.parent.closeModal();
+        }
+    };
+    document.getElementById('btnSubmit').onclick = doReturn;
+
+    // 加载详情
+    loadDetail();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<WebPage isPage="true" showAsImage="false" autoScale="false" tdHeavy="false" pageFixedRow="false" pageFixedRowCount="30"/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900">
+<![CDATA[723900,723900,723900,723900,723900,723900,723900,723900,723900,723900,723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200">
+<![CDATA[2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand>
+<cellSortAttr/>
+</Expand>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color>
+<FineColor color="-1" hor="-1" ver="-1"/>
+</color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+
+<StrategyConfigsAttr class="com.fr.esd.core.strategy.persistence.StrategyConfigsAttr">
+<StrategyConfigs/>
+</StrategyConfigsAttr>
+
+<ForkIdAttrMark class="com.fr.base.iofile.attr.ForkIdAttrMark">
+<ForkIdAttrMark forkId="borrow_return_v1"/>
+</ForkIdAttrMark>
+
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttrMark">
+<TemplateIdAttMark TemplateId="borrow_return_v1"/>
+</TemplateIdAttMark>
+</WorkBook>

@@ -1,0 +1,536 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+
+<!-- ==================== 设备查询 ==================== -->
+
+<!-- 设备列表查询 -->
+<TableData name="equipment_qry" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_page"/><O><![CDATA[1]]></O></Parameter>
+<Parameter><Attributes name="p_pagesize"/><O><![CDATA[10]]></O></Parameter>
+<Parameter><Attributes name="p_status"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_type"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_keyword"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_orderby"/><O><![CDATA[id]]></O></Parameter>
+<Parameter><Attributes name="p_order"/><O><![CDATA[DESC]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT * FROM equipment
+WHERE 1=1
+${if(len(p_status) == 0, "", "AND status = '" + p_status + "'")}
+${if(len(p_type) == 0, "", "AND type = '" + p_type + "'")}
+${if(len(p_keyword) == 0, "", "AND (asset_no LIKE '%" + p_keyword + "%' OR name LIKE '%" + p_keyword + "%')")}
+ORDER BY ${p_orderby} ${p_order}
+LIMIT ${(p_page - 1) * p_pagesize}, ${p_pagesize}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 设备总数 -->
+<TableData name="equipment_total" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_status"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_type"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_keyword"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT COUNT(*) as total_count FROM equipment
+WHERE 1=1
+${if(len(p_status) == 0, "", "AND status = '" + p_status + "'")}
+${if(len(p_type) == 0, "", "AND type = '" + p_type + "'")}
+${if(len(p_keyword) == 0, "", "AND (asset_no LIKE '%" + p_keyword + "%' OR name LIKE '%" + p_keyword + "%')")}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 设备统计 -->
+<TableData name="equipment_stats" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT
+    COUNT(*) as total,
+    SUM(CASE WHEN status = '可用' THEN 1 ELSE 0 END) as available,
+    SUM(CASE WHEN status = '借出' THEN 1 ELSE 0 END) as borrowed,
+    SUM(CASE WHEN status = '维修' THEN 1 ELSE 0 END) as maintenance
+FROM equipment
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 单个设备查询（用于编辑回填） -->
+<TableData name="equipment_by_id" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT * FROM equipment WHERE id = ${p_id}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- ==================== 借用记录查询 ==================== -->
+
+<!-- 借用记录列表 -->
+<TableData name="borrow_qry" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_page"/><O><![CDATA[1]]></O></Parameter>
+<Parameter><Attributes name="p_pagesize"/><O><![CDATA[10]]></O></Parameter>
+<Parameter><Attributes name="p_status"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_user_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_orderby"/><O><![CDATA[id]]></O></Parameter>
+<Parameter><Attributes name="p_order"/><O><![CDATA[DESC]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT * FROM borrow_record
+WHERE 1=1
+${if(len(p_status) == 0, "", "AND status = '" + p_status + "'")}
+${if(len(p_user_name) == 0, "", "AND user_name LIKE '%" + p_user_name + "%'")}
+ORDER BY ${p_orderby} ${p_order}
+LIMIT ${(p_page - 1) * p_pagesize}, ${p_pagesize}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 借用记录总数 -->
+<TableData name="borrow_total" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_status"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_user_name"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT COUNT(*) as total_count FROM borrow_record
+WHERE 1=1
+${if(len(p_status) == 0, "", "AND status = '" + p_status + "'")}
+${if(len(p_user_name) == 0, "", "AND user_name LIKE '%" + p_user_name + "%'")}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 借用记录统计 -->
+<TableData name="borrow_stats" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT
+    COUNT(*) as total,
+    SUM(CASE WHEN status = '借用中' THEN 1 ELSE 0 END) as borrowing,
+    SUM(CASE WHEN status = '已归还' THEN 1 ELSE 0 END) as returned,
+    SUM(CASE WHEN status = '已逾期' THEN 1 ELSE 0 END) as overdue
+FROM borrow_record
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 单个借用记录查询 -->
+<TableData name="borrow_by_id" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT * FROM borrow_record WHERE id = ${p_id}
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- ==================== 字典数据 ==================== -->
+
+<!-- 设备类型字典 -->
+<TableData name="dict_type" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT '笔记本' as value, '笔记本' as label
+UNION SELECT '台式机', '台式机'
+UNION SELECT '投影仪', '投影仪'
+UNION SELECT '打印机', '打印机'
+UNION SELECT '显示器', '显示器'
+UNION SELECT '其他', '其他'
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 设备状态字典 -->
+<TableData name="dict_equipment_status" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT '可用' as value, '可用' as label
+UNION SELECT '借出', '借出'
+UNION SELECT '维修', '维修'
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 借用状态字典 -->
+<TableData name="dict_borrow_status" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT '借用中' as value, '借用中' as label
+UNION SELECT '已归还', '已归还'
+UNION SELECT '已逾期', '已逾期'
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 可借用设备列表（选择器用） -->
+<TableData name="equipment_available" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_keyword"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT id, asset_no, name, type, location
+FROM equipment
+WHERE status = '可用'
+${if(len(p_keyword) == 0, "", "AND (asset_no LIKE '%" + p_keyword + "%' OR name LIKE '%" + p_keyword + "%')")}
+ORDER BY id DESC
+LIMIT 100
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- ==================== 写入操作 ==================== -->
+
+<!-- 新增借用记录 -->
+<TableData name="insert_borrow" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_user_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_dept_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_equipment_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_asset_no"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_borrow_date"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_expected_return"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_remark"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL sp_borrow_equipment('${p_id}', '${p_user_name}', '${p_dept_name}', ${p_equipment_id}, '${p_borrow_date}', '${p_expected_return}', '${p_remark}');
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 归还设备存储过程 -->
+<TableData name="sp_return_borrow" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+<Parameter><Attributes name="p_actual_return"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL sp_return_borrow(${p_id}, '${p_actual_return}');
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 删除存储过程 -->
+<TableData name="sp_delete" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_table"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL sp_delete('${p_table}', ${p_id});
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 新增设备 -->
+<TableData name="insert_equipment" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_asset_no"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_type"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_status"/><O><![CDATA[可用]]></O></Parameter>
+<Parameter><Attributes name="p_location"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_remark"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL sp_insert_equipment('${p_asset_no}', '${p_name}', '${p_type}', '${p_status}', '${p_location}', '${p_remark}');
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 更新设备 -->
+<TableData name="update_equipment" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+<Parameter><Attributes name="p_asset_no"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_type"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_status"/><O><![CDATA[可用]]></O></Parameter>
+<Parameter><Attributes name="p_location"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_remark"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL sp_update_equipment(${p_id}, '${p_asset_no}', '${p_name}', '${p_type}', '${p_status}', '${p_location}', '${p_remark}');
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- ==================== 批量导入（原 equipment_batch_data.cpt 合并） ==================== -->
+
+<!-- 批量写入临时表 -->
+<TableData name="batch_insert" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_data_json"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_start_row"/><O><![CDATA[1]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL common_db.sp_batch_import('${p_import_id}', 'equipment', '${p_data_json}', ${p_start_row})
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 校验导入数据 -->
+<TableData name="validate" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL common_db.sp_equipment_import_validate('${p_import_id}')
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 提交到业务表 -->
+<TableData name="commit" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_mode"/><O><![CDATA[VALID_ONLY]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+CALL common_db.sp_equipment_import_commit('${p_import_id}', '${p_mode}')
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 查询错误记录 -->
+<TableData name="errors" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT
+    row_no,
+    str_01 AS asset_no,
+    str_02 AS equipment_name,
+    str_03 AS equipment_type,
+    error_msg
+FROM temp_import
+WHERE import_id = '${p_import_id}' AND is_valid = 0
+ORDER BY row_no
+LIMIT 100
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<!-- 导入统计 -->
+<TableData name="stats" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[
+SELECT
+    COUNT(*) AS total,
+    SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) AS valid_count,
+    SUM(CASE WHEN is_valid = 0 THEN 1 ELSE 0 END) AS error_count
+FROM temp_import
+WHERE import_id = '${p_import_id}'
+]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebPageContent>
+<ToolBars/>
+<WebPage isPage="true" showAsImage="false" autoScale="false" tdHeavy="false" pageFixedRow="false" pageFixedRowCount="30"/>
+</WebPageContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR/>
+<FR/>
+<HC/>
+<FC/>
+<USE REPEAT="false" PAGE="false" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList/>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<!-- 参数面板配置 -->
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+<Parameter><Attributes name="p_page"/><O><![CDATA[1]]></O></Parameter>
+<Parameter><Attributes name="p_pagesize"/><O><![CDATA[10]]></O></Parameter>
+<Parameter><Attributes name="p_status"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_type"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_keyword"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_user_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_orderby"/><O><![CDATA[id]]></O></Parameter>
+<Parameter><Attributes name="p_order"/><O><![CDATA[DESC]]></O></Parameter>
+<Parameter><Attributes name="p_id"/><O><![CDATA[0]]></O></Parameter>
+<Parameter><Attributes name="p_dept_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_equipment_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_asset_no"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_borrow_date"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_expected_return"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_remark"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_actual_return"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_name"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_location"/><O><![CDATA[]]></O></Parameter>
+<!-- 批量导入参数 -->
+<Parameter><Attributes name="p_import_id"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_data_json"/><O><![CDATA[]]></O></Parameter>
+<Parameter><Attributes name="p_start_row"/><O><![CDATA[1]]></O></Parameter>
+<Parameter><Attributes name="p_mode"/><O><![CDATA[VALID_ONLY]]></O></Parameter>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttrMark">
+<TemplateIdAttMark TemplateId="borrow_data_v2"/>
+</TemplateIdAttMark>
+</WorkBook>

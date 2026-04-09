@@ -1,0 +1,1351 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * 借用管理列表 - Ant Design 5.0 风格
+ * 功能：Tab切换 + 分页 + 排序 + 筛选 + 新增/编辑/删除
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        // 当前模板目录
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+
+        // API基础路径：从servletURL截取前两级
+        // servletURL = "/webroot/decision/view/report" → 截取 "/webroot/decision"
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })(),
+
+        // 数据层模板路径（展示层在pages/，数据层在data/）
+        getDataTemplate: function(filename) {
+            return this.currentDir.replace('/pages/', '/data/') + filename;
+        },
+
+        // 同目录模板路径
+        getTemplatePath: function(filename) {
+            return this.currentDir + filename;
+        }
+    };
+
+    // ==================== 配置 ====================
+    var CONFIG = {
+        dataTemplate: PATH.getDataTemplate('borrow_data.cpt'),
+        pageSize: 10,
+        maxPageButtons: 5
+    };
+
+    // ==================== 状态管理 ====================
+    var currentTab = 'equipment';
+
+    var equipmentState = {
+        data: [],
+        page: 1,
+        totalPages: 1,
+        loading: false,
+        total: 0,
+        filters: {
+            keyword: '',
+            type: '',
+            status: ''
+        },
+        sort: {
+            field: 'id',
+            order: 'DESC'
+        }
+    };
+
+    var borrowState = {
+        data: [],
+        page: 1,
+        totalPages: 1,
+        loading: false,
+        total: 0,
+        filters: {
+            user_name: '',
+            status: '',
+            date_from: '',
+            date_to: ''
+        },
+        sort: {
+            field: 'id',
+            order: 'DESC'
+        }
+    };
+
+    // ==================== 工具函数 ====================
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"']/g, function(s) {
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return map[s];
+        });
+    }
+
+    // ==================== API 请求封装（统一异常处理） ====================
+    /**
+     * 统一API请求函数
+     * 调用链路：前端 → /api/data → borrow_data.cpt → 数据库
+     *
+     * 异常层级：
+     * 1. 网络层：超时、断网、会话过期
+     * 2. 帆软框架层：模板错误、数据集错误、数据库连接
+     * 3. 数据层：存储过程执行错误
+     * 4. 业务层：存储过程返回业务错误
+     */
+    function apiRequest(datasource, params, options) {
+        options = options || {};
+        var timeout = options.timeout || 30000;
+        var pageSize = options.pageSize || -1;
+
+        return new Promise(function(resolve) {
+            $.ajax({
+                url: PATH.apiBase + '/api/data',
+                type: 'POST',
+                contentType: 'application/json',
+                timeout: timeout,
+                data: JSON.stringify({
+                    report_path: CONFIG.dataTemplate,
+                    datasource_name: datasource,
+                    page_number: -1,
+                    page_size: pageSize,
+                    parameters: params || []
+                }),
+                success: function(resStr) {
+                    // 解析响应
+                    var res;
+                    try {
+                        res = typeof resStr === 'string' ? JSON.parse(resStr) : resStr;
+                    } catch (e) {
+                        resolve({
+                            success: false,
+                            error: '响应数据解析失败',
+                            code: 'PARSE_ERROR',
+                            layer: 'framework',
+                            data: []
+                        });
+                        return;
+                    }
+
+                    // 帆软框架层异常
+                    if (res.err_code !== 0) {
+                        resolve({
+                            success: false,
+                            error: res.err_msg || '帆软框架错误',
+                            code: 'FR_ERROR',
+                            layer: 'framework',
+                            data: []
+                        });
+                        return;
+                    }
+
+                    // 成功
+                    resolve({
+                        success: true,
+                        data: res.data || [],
+                        raw: res
+                    });
+                },
+                error: function(xhr, textStatus) {
+                    // 网络层异常
+                    var result = { success: false, layer: 'network', data: [] };
+
+                    if (textStatus === 'timeout') {
+                        result.error = '请求超时';
+                        result.code = 'TIMEOUT';
+                    } else if (xhr.status === 0) {
+                        result.error = '网络连接失败';
+                        result.code = 'NETWORK_ERROR';
+                    } else if (xhr.status === 401) {
+                        result.error = '会话已过期，请重新登录';
+                        result.code = 'SESSION_EXPIRED';
+                        result.needLogin = true;
+                    } else {
+                        result.error = '请求失败: ' + (xhr.statusText || textStatus);
+                        result.code = 'HTTP_' + xhr.status;
+                    }
+
+                    resolve(result);
+                }
+            });
+        });
+    }
+
+    // 查询数据（返回数组）
+    function fetchData(datasource, params, callback) {
+        apiRequest(datasource, params).then(function(result) {
+            if (!result.success) {
+                console.error('fetchData error:', result.error);
+                // 显示错误提示（可选）
+                if (result.needLogin) {
+                    if (confirm('会话已过期，是否重新登录？')) {
+                        window.location.href = PATH.apiBase + '/login';
+                        return;
+                    }
+                }
+            }
+            callback(result.data || []);
+        });
+    }
+
+    // 查询单条数据
+    function fetchSingle(datasource, params, callback) {
+        apiRequest(datasource, params, { pageSize: 1 }).then(function(result) {
+            if (!result.success) {
+                console.error('fetchSingle error:', result.error);
+                if (result.needLogin) {
+                    if (confirm('会话已过期，是否重新登录？')) {
+                        window.location.href = PATH.apiBase + '/login';
+                        return;
+                    }
+                }
+            }
+            callback(result.data && result.data[0] || {});
+        });
+    }
+
+    // 执行写入操作（返回带success的结果）
+    function executeData(datasource, params) {
+        return apiRequest(datasource, params).then(function(result) {
+            if (!result.success) {
+                return result;
+            }
+
+            // 检查存储过程返回结果
+            if (result.data && result.data.length > 0 && result.data[0].result) {
+                try {
+                    var spResult = JSON.parse(result.data[0].result);
+                    return {
+                        success: spResult.success === true || spResult.success === 'true',
+                        message: spResult.message || spResult.msg || '',
+                        data: spResult.data,
+                        id: spResult.id,
+                        raw: spResult
+                    };
+                } catch (e) {
+                    return {
+                        success: false,
+                        error: '存储过程返回格式错误',
+                        code: 'SP_PARSE_ERROR',
+                        layer: 'data'
+                    };
+                }
+            }
+
+            return result;
+        });
+    }
+
+    // ==================== 设备管理 ====================
+    function loadEquipmentData(page) {
+        page = page || equipmentState.page;
+        if (equipmentState.loading) return;
+        equipmentState.loading = true;
+        showLoading(true);
+
+        var params = [];
+        if (equipmentState.filters.keyword) {
+            params.push({ name: 'p_keyword', type: 'String', value: equipmentState.filters.keyword });
+        }
+        if (equipmentState.filters.type) {
+            params.push({ name: 'p_type', type: 'String', value: equipmentState.filters.type });
+        }
+        if (equipmentState.filters.status) {
+            params.push({ name: 'p_status', type: 'String', value: equipmentState.filters.status });
+        }
+        params.push({ name: 'p_orderby', type: 'String', value: equipmentState.sort.field });
+        params.push({ name: 'p_order', type: 'String', value: equipmentState.sort.order });
+        params.push({ name: 'p_page', type: 'Integer', value: page });
+        params.push({ name: 'p_pagesize', type: 'Integer', value: CONFIG.pageSize });
+
+        fetchData('equipment_qry', params, function(data) {
+            equipmentState.data = data;
+            equipmentState.page = page;
+            equipmentState.loading = false;
+
+            // 获取总数
+            var totalParams = [];
+            if (equipmentState.filters.keyword) {
+                totalParams.push({ name: 'p_keyword', type: 'String', value: equipmentState.filters.keyword });
+            }
+            if (equipmentState.filters.type) {
+                totalParams.push({ name: 'p_type', type: 'String', value: equipmentState.filters.type });
+            }
+            if (equipmentState.filters.status) {
+                totalParams.push({ name: 'p_status', type: 'String', value: equipmentState.filters.status });
+            }
+            fetchSingle('equipment_total', totalParams, function(result) {
+                equipmentState.total = result.total_count || 0;
+                showLoading(false);
+                refreshEquipmentTable();
+                loadEquipmentStats();
+            });
+        });
+    }
+
+    function loadEquipmentStats() {
+        fetchData('equipment_stats', [], function(data) {
+            var stats = data[0] || {};
+            var statsRow = document.getElementById('equipmentStatsRow');
+            if (statsRow) {
+                statsRow.outerHTML = renderEquipmentStats(stats);
+            }
+        });
+    }
+
+    // ==================== 借用记录 ====================
+    function loadBorrowData(page) {
+        page = page || borrowState.page;
+        if (borrowState.loading) return;
+        borrowState.loading = true;
+        showLoading(true);
+
+        var params = [];
+        if (borrowState.filters.user_name) {
+            params.push({ name: 'p_user_name', type: 'String', value: borrowState.filters.user_name });
+        }
+        if (borrowState.filters.status) {
+            params.push({ name: 'p_status', type: 'String', value: borrowState.filters.status });
+        }
+        params.push({ name: 'p_orderby', type: 'String', value: borrowState.sort.field });
+        params.push({ name: 'p_order', type: 'String', value: borrowState.sort.order });
+        params.push({ name: 'p_page', type: 'Integer', value: page });
+        params.push({ name: 'p_pagesize', type: 'Integer', value: CONFIG.pageSize });
+
+        fetchData('borrow_qry', params, function(data) {
+            borrowState.data = data;
+            borrowState.page = page;
+            borrowState.loading = false;
+
+            // 获取总数
+            var totalParams = [];
+            if (borrowState.filters.user_name) {
+                totalParams.push({ name: 'p_user_name', type: 'String', value: borrowState.filters.user_name });
+            }
+            if (borrowState.filters.status) {
+                totalParams.push({ name: 'p_status', type: 'String', value: borrowState.filters.status });
+            }
+            fetchSingle('borrow_total', totalParams, function(result) {
+                borrowState.total = result.total_count || 0;
+                showLoading(false);
+                refreshBorrowTable();
+                loadBorrowStats();
+            });
+        });
+    }
+
+    function loadBorrowStats() {
+        fetchData('borrow_stats', [], function(data) {
+            var stats = data[0] || {};
+            var statsRow = document.getElementById('borrowStatsRow');
+            if (statsRow) {
+                statsRow.outerHTML = renderBorrowStats(stats);
+            }
+        });
+    }
+
+    // ==================== 渲染函数 ====================
+    function renderStyles() {
+        return '<style>' +
+            '*{box-sizing:border-box;margin:0;padding:0}' +
+            'html,body{height:auto!important;min-height:100%;overflow-y:auto!important;overflow-x:hidden}' +
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88);line-height:1.5714285714285714}' +
+            ':root{--ant-primary:#1677ff;--ant-primary-hover:#4096ff;--ant-primary-active:#0958d9;--ant-border-radius:6px;--ant-shadow:0 1px 2px 0 rgba(0,0,0,.03),0 1px 6px -1px rgba(0,0,0,.02),0 2px 4px 0 rgba(0,0,0,.02)}' +
+            '.ad-container{max-width:1200px;margin:0 auto;padding:24px;padding-bottom:60px}' +
+            '.fr-content,.fr-report,.content-container{overflow:visible!important;height:auto!important}' +
+            '.ad-card{background:#fff;border-radius:var(--ant-border-radius);box-shadow:var(--ant-shadow);margin-bottom:16px}' +
+            '.ad-card-body{padding:24px}' +
+            '.ad-page-header{margin-bottom:24px}' +
+            '.ad-page-title{font-size:24px;font-weight:600;color:rgba(0,0,0,.88)}' +
+            '.ad-tabs{display:flex;gap:0;border-bottom:1px solid #f0f0f0;margin-bottom:24px}' +
+            '.ad-tab{padding:12px 16px;font-size:14px;color:rgba(0,0,0,.65);cursor:pointer;border-bottom:2px solid transparent;transition:all .3s}' +
+            '.ad-tab:hover{color:var(--ant-primary)}' +
+            '.ad-tab.active{color:var(--ant-primary);border-bottom-color:var(--ant-primary)}' +
+            '.ad-stat-row{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}' +
+            '.ad-stat-card{flex:1;min-width:180px;background:#fff;border-radius:var(--ant-border-radius);padding:20px;box-shadow:var(--ant-shadow)}' +
+            '.ad-stat-value{font-size:30px;font-weight:600;line-height:1.2}' +
+            '.ad-stat-label{font-size:14px;color:rgba(0,0,0,.45);margin-top:4px}' +
+            '.ad-stat-available .ad-stat-value{color:#52c41a}' +
+            '.ad-stat-borrowed .ad-stat-value{color:#1677ff}' +
+            '.ad-stat-maintenance .ad-stat-value{color:#faad14}' +
+            '.ad-stat-borrowing .ad-stat-value{color:#1677ff}' +
+            '.ad-stat-returned .ad-stat-value{color:#52c41a}' +
+            '.ad-stat-overdue .ad-stat-value{color:#ff4d4f}' +
+            '.ad-filter-bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px}' +
+            '.ad-filter-item{display:flex;align-items:center;gap:8px}' +
+            '.ad-filter-label{font-size:14px;color:rgba(0,0,0,.88);white-space:nowrap}' +
+            '.ad-input{height:32px;padding:4px 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none;min-width:150px}' +
+            '.ad-input:hover{border-color:var(--ant-primary)}' +
+            '.ad-input:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-input-small{min-width:120px}' +
+            '.ad-select{height:32px;padding:0 24px 0 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23999\' stroke-width=\'2\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E") no-repeat right 8px center;appearance:none;min-width:120px;cursor:pointer}' +
+            '.ad-select:hover{border-color:var(--ant-primary)}' +
+            '.ad-select:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-btn{height:32px;padding:4px 15px;font-size:14px;border-radius:var(--ant-border-radius);border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:32px}' +
+            '.ad-btn-primary{background:var(--ant-primary);color:#fff;border-color:var(--ant-primary)}' +
+            '.ad-btn-primary:hover{background:var(--ant-primary-hover)}' +
+            '.ad-btn-default{background:#fff;color:rgba(0,0,0,.88);border-color:#d9d9d9}' +
+            '.ad-btn-default:hover{color:var(--ant-primary);border-color:var(--ant-primary)}' +
+            '.ad-btn:disabled{opacity:0.4;cursor:not-allowed;color:rgba(0,0,0,.25);border-color:#d9d9d9}' +
+            '.ad-btn-link{height:auto;padding:0;border:none;background:transparent;color:var(--ant-primary);cursor:pointer}' +
+            '.ad-btn-link:hover{text-decoration:underline}' +
+            '.ad-btn-danger{color:#ff4d4f}' +
+            '.ad-action-bar{display:flex;gap:12px;margin-bottom:16px}' +
+            '.ad-table-wrapper{border-radius:var(--ant-border-radius);overflow:hidden;border:1px solid #f0f0f0}' +
+            '.ad-table{width:100%;border-collapse:collapse;font-size:14px}' +
+            '.ad-table th{background:#fafafa;padding:16px;text-align:left;font-weight:600;color:rgba(0,0,0,.88);border-bottom:1px solid #f0f0f0;white-space:nowrap;cursor:pointer;user-select:none}' +
+            '.ad-table th:hover{background:#f5f5f5}' +
+            '.ad-table th.sortable{position:relative;padding-right:24px}' +
+            '.ad-table th .sort-icon{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:.3;font-size:12px}' +
+            '.ad-table th.sorted .sort-icon{opacity:1;color:var(--ant-primary)}' +
+            '.ad-table td{padding:16px;border-bottom:1px solid #f0f0f0;color:rgba(0,0,0,.88)}' +
+            '.ad-table tbody tr:hover{background:#fafafa}' +
+            '.ad-table tbody tr:last-child td{border-bottom:none}' +
+            '.ad-tag{display:inline-block;height:22px;line-height:22px;padding:0 8px;font-size:12px;border-radius:4px;border:1px solid transparent}' +
+            '.ad-tag-green{background:#f6ffed;border-color:#b7eb8f;color:#389e0d}' +
+            '.ad-tag-blue{background:#e6f4ff;border-color:#91caff;color:#1677ff}' +
+            '.ad-tag-orange{background:#fff7e6;border-color:#ffd591;color:#d46b08}' +
+            '.ad-tag-red{background:#fff2f0;border-color:#ffccc7;color:#cf1322}' +
+            '.ad-tag-default{background:#fafafa;border-color:#d9d9d9;color:rgba(0,0,0,.45)}' +
+            '.ad-pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:16px 0;flex-wrap:wrap}' +
+            '.ad-pagination-item{min-width:32px;height:32px;border-radius:var(--ant-border-radius);border:1px solid #d9d9d9;background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:rgba(0,0,0,.88)}' +
+            '.ad-pagination-item:hover{border-color:var(--ant-primary);color:var(--ant-primary)}' +
+            '.ad-pagination-item.active{background:var(--ant-primary);border-color:var(--ant-primary);color:#fff}' +
+            '.ad-pagination-item:disabled{opacity:0.4;cursor:not-allowed;color:rgba(0,0,0,.25)}' +
+            '.ad-pagination-ellipsis{min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;color:rgba(0,0,0,.25)}' +
+            '.ad-pagination-total{font-size:14px;color:rgba(0,0,0,.45);margin-right:8px}' +
+            '.ad-pagination-jump{display:flex;align-items:center;gap:8px;margin-left:8px;font-size:14px;color:rgba(0,0,0,.88)}' +
+            '.ad-pagination-jump-input{width:50px;height:32px;padding:4px 8px;text-align:center;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none}' +
+            '.ad-pagination-jump-input:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-loading{display:inline-block;width:16px;height:16px;border:2px solid #f0f0f0;border-top-color:var(--ant-primary);border-radius:50%;animation:ad-spin .8s linear infinite}' +
+            '@keyframes ad-spin{to{transform:rotate(360deg)}}' +
+            '.ad-loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.7);display:none;align-items:center;justify-content:center;z-index:1000}' +
+            '.ad-loading-content{background:#fff;padding:24px 32px;border-radius:var(--ant-border-radius);box-shadow:var(--ant-shadow);display:flex;align-items:center;gap:12px;font-size:14px}' +
+            '.ad-empty{padding:48px;text-align:center;color:rgba(0,0,0,.25)}' +
+            '.ad-empty-icon{font-size:48px;margin-bottom:16px}' +
+            '.ad-footer{margin-top:16px;padding:12px 0;text-align:center;color:rgba(0,0,0,.45);font-size:12px}' +
+            '.ad-action-links a{margin-right:12px;text-decoration:none}' +
+            '.ad-modal-mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:1001}' +
+            '.ad-modal{background:#fff;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.12);width:90%;max-width:800px;height:85%;display:flex;flex-direction:column;max-height:90vh}' +
+            '.ad-modal-header{padding:16px 24px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}' +
+            '.ad-modal-title{font-size:16px;font-weight:600;color:rgba(0,0,0,.88)}' +
+            '.ad-modal-close{width:32px;height:32px;border:none;background:transparent;font-size:20px;color:rgba(0,0,0,.45);cursor:pointer;border-radius:4px;line-height:1}' +
+            '.ad-modal-close:hover{color:rgba(0,0,0,.88);background:#f5f5f5}' +
+            '.ad-modal-body{flex:1;padding:0;overflow:hidden}' +
+            '.ad-modal-body iframe{width:100%;height:100%;border:none}' +
+            '.ad-modal-large{max-width:900px;height:90%}' +
+            '.ad-confirm-mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:1002}' +
+            '.ad-confirm{background:#fff;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.12);width:90%;max-width:400px;padding:24px}' +
+            '.ad-confirm-title{font-size:16px;font-weight:600;color:rgba(0,0,0,.88);margin-bottom:8px}' +
+            '.ad-confirm-content{font-size:14px;color:rgba(0,0,0,.65);margin-bottom:24px}' +
+            '.ad-confirm-btns{display:flex;gap:12px;justify-content:flex-end}' +
+            '.ad-confirm-btn{height:32px;padding:4px 15px;font-size:14px;border-radius:6px;border:none;cursor:pointer;min-width:64px}' +
+            '.ad-confirm-btn-cancel{background:#fff;color:rgba(0,0,0,.88);border:1px solid #d9d9d9}' +
+            '.ad-confirm-btn-cancel:hover{border-color:#1677ff;color:#1677ff}' +
+            '.ad-confirm-btn-ok{background:#ff4d4f;color:#fff;border:1px solid #ff4d4f}' +
+            '.ad-confirm-btn-ok:hover{background:#ff7875}' +
+            '.ad-message{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:6px;font-size:14px;display:flex;align-items:center;gap:8px;z-index:2000;box-shadow:0 6px 16px rgba(0,0,0,.08);animation:ad-message-in .3s ease}' +
+            '@keyframes ad-message-in{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}' +
+            '.ad-message-success{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}' +
+            '.ad-message-error{background:#fff2f0;border-color:#ffccc7;color:#ff4d4f}' +
+            '.ad-message-warning{background:#fffbe6;border:1px solid #ffe58f;color:#faad14}' +
+            '.ad-message-icon{font-size:16px;line-height:1}' +
+            '.ad-tab-content{display:none}' +
+            '.ad-tab-content.active{display:block}' +
+            '</style>';
+    }
+
+    function renderHeader() {
+        return '<div class="ad-page-header">' +
+            '<h1 class="ad-page-title">借用管理</h1>' +
+            '</div>';
+    }
+
+    function renderTabs() {
+        return '<div class="ad-tabs">' +
+            '<div class="ad-tab active" id="tabEquipment" data-tab="equipment">设备管理</div>' +
+            '<div class="ad-tab" id="tabBorrow" data-tab="borrow">借用记录</div>' +
+            '</div>';
+    }
+
+    function renderEquipmentStats(stats) {
+        return '<div class="ad-stat-row" id="equipmentStatsRow">' +
+            '<div class="ad-stat-card ad-stat-available">' +
+            '<div class="ad-stat-value">' + (stats.available || 0) + '</div>' +
+            '<div class="ad-stat-label">可用设备</div>' +
+            '</div>' +
+            '<div class="ad-stat-card ad-stat-borrowed">' +
+            '<div class="ad-stat-value">' + (stats.borrowed || 0) + '</div>' +
+            '<div class="ad-stat-label">已借出</div>' +
+            '</div>' +
+            '<div class="ad-stat-card ad-stat-maintenance">' +
+            '<div class="ad-stat-value">' + (stats.maintenance || 0) + '</div>' +
+            '<div class="ad-stat-label">维修中</div>' +
+            '</div>' +
+            '<div class="ad-stat-card">' +
+            '<div class="ad-stat-value">' + (stats.total || 0) + '</div>' +
+            '<div class="ad-stat-label">设备总数</div>' +
+            '</div>' +
+            '</div>';
+    }
+
+    function renderBorrowStats(stats) {
+        return '<div class="ad-stat-row" id="borrowStatsRow">' +
+            '<div class="ad-stat-card ad-stat-borrowing">' +
+            '<div class="ad-stat-value">' + (stats.borrowing || 0) + '</div>' +
+            '<div class="ad-stat-label">借用中</div>' +
+            '</div>' +
+            '<div class="ad-stat-card ad-stat-returned">' +
+            '<div class="ad-stat-value">' + (stats.returned || 0) + '</div>' +
+            '<div class="ad-stat-label">已归还</div>' +
+            '</div>' +
+            '<div class="ad-stat-card ad-stat-overdue">' +
+            '<div class="ad-stat-value">' + (stats.overdue || 0) + '</div>' +
+            '<div class="ad-stat-label">已逾期</div>' +
+            '</div>' +
+            '<div class="ad-stat-card">' +
+            '<div class="ad-stat-value">' + (stats.total || 0) + '</div>' +
+            '<div class="ad-stat-label">记录总数</div>' +
+            '</div>' +
+            '</div>';
+    }
+
+    function renderEquipmentFilterBar(types, statuses) {
+        var typeOptions = '<option value="">全部类型</option>' +
+            types.map(function(t) {
+                return '<option value="' + escapeHtml(t.value) + '"' +
+                    (equipmentState.filters.type === t.value ? ' selected' : '') + '>' +
+                    escapeHtml(t.label) + '</option>';
+            }).join('');
+
+        var statusOptions = '<option value="">全部状态</option>' +
+            statuses.map(function(s) {
+                return '<option value="' + escapeHtml(s.value) + '"' +
+                    (equipmentState.filters.status === s.value ? ' selected' : '') + '>' +
+                    escapeHtml(s.label) + '</option>';
+            }).join('');
+
+        return '<div class="ad-card"><div class="ad-card-body">' +
+            '<div class="ad-filter-bar">' +
+            '<div class="ad-filter-item">' +
+            '<span class="ad-filter-label">编号/名称：</span>' +
+            '<input type="text" class="ad-input" id="filterKeyword" placeholder="搜索" value="' + escapeHtml(equipmentState.filters.keyword) + '">' +
+            '</div>' +
+            '<div class="ad-filter-item">' +
+            '<span class="ad-filter-label">类型：</span>' +
+            '<select class="ad-select" id="filterType">' + typeOptions + '</select>' +
+            '</div>' +
+            '<div class="ad-filter-item">' +
+            '<span class="ad-filter-label">状态：</span>' +
+            '<select class="ad-select" id="filterStatus">' + statusOptions + '</select>' +
+            '</div>' +
+            '<button class="ad-btn ad-btn-primary" id="btnSearchEquipment">查询</button>' +
+            '<button class="ad-btn ad-btn-default" id="btnResetEquipment">重置</button>' +
+            '</div>' +
+            '<div class="ad-action-bar">' +
+            '<button class="ad-btn ad-btn-primary" id="btnAddEquipment">+ 新增设备</button>' +
+            '<button class="ad-btn ad-btn-default" id="btnBatchImport">批量导入</button>' +
+            '</div>' +
+            '</div></div>';
+    }
+
+    function renderBorrowFilterBar(statuses) {
+        var statusOptions = '<option value="">全部状态</option>' +
+            statuses.map(function(s) {
+                return '<option value="' + escapeHtml(s.value) + '"' +
+                    (borrowState.filters.status === s.value ? ' selected' : '') + '>' +
+                    escapeHtml(s.label) + '</option>';
+            }).join('');
+
+        return '<div class="ad-card"><div class="ad-card-body">' +
+            '<div class="ad-filter-bar">' +
+            '<div class="ad-filter-item">' +
+            '<span class="ad-filter-label">借用人：</span>' +
+            '<input type="text" class="ad-input" id="filterUserName" placeholder="搜索" value="' + escapeHtml(borrowState.filters.user_name) + '">' +
+            '</div>' +
+            '<div class="ad-filter-item">' +
+            '<span class="ad-filter-label">状态：</span>' +
+            '<select class="ad-select" id="filterBorrowStatus">' + statusOptions + '</select>' +
+            '</div>' +
+            '<button class="ad-btn ad-btn-primary" id="btnSearchBorrow">查询</button>' +
+            '<button class="ad-btn ad-btn-default" id="btnResetBorrow">重置</button>' +
+            '</div>' +
+            '<div class="ad-action-bar">' +
+            '<button class="ad-btn ad-btn-primary" id="btnApplyBorrow">借用申请</button>' +
+            '</div>' +
+            '</div></div>';
+    }
+
+    function getEquipmentStatusTag(status) {
+        var tagClass = {
+            '可用': 'ad-tag-green',
+            '借出': 'ad-tag-blue',
+            '维修': 'ad-tag-orange'
+        };
+        return '<span class="ad-tag ' + (tagClass[status] || 'ad-tag-default') + '">' + escapeHtml(status) + '</span>';
+    }
+
+    function getBorrowStatusTag(status) {
+        var tagClass = {
+            '借用中': 'ad-tag-blue',
+            '已归还': 'ad-tag-green',
+            '已逾期': 'ad-tag-red'
+        };
+        return '<span class="ad-tag ' + (tagClass[status] || 'ad-tag-default') + '">' + escapeHtml(status) + '</span>';
+    }
+
+    function getSortIcon(state, field) {
+        if (state.sort.field !== field) {
+            return '↕';
+        }
+        return state.sort.order === 'ASC' ? '↑' : '↓';
+    }
+
+    function renderEquipmentTableHeader() {
+        var columns = [
+            { field: 'asset_no', label: '资产编号', sortable: true },
+            { field: 'name', label: '设备名称', sortable: true },
+            { field: 'type', label: '类型', sortable: true },
+            { field: 'status', label: '状态', sortable: true },
+            { field: 'location', label: '存放位置', sortable: false },
+            { field: 'operation', label: '操作', sortable: false }
+        ];
+
+        var html = '<thead><tr>';
+        columns.forEach(function(col) {
+            var sortableClass = col.sortable ? 'sortable' : '';
+            var sortedClass = equipmentState.sort.field === col.field ? 'sorted' : '';
+            var icon = col.sortable ? '<span class="sort-icon">' + getSortIcon(equipmentState, col.field) + '</span>' : '';
+            html += '<th class="' + sortableClass + ' ' + sortedClass + '" data-field="' + col.field + '">' +
+                escapeHtml(col.label) + icon + '</th>';
+        });
+        html += '</tr></thead>';
+        return html;
+    }
+
+    function renderBorrowTableHeader() {
+        var columns = [
+            { field: 'id', label: '借用单号', sortable: true },
+            { field: 'user_name', label: '借用人', sortable: true },
+            { field: 'dept_name', label: '部门', sortable: true },
+            { field: 'equipment_name', label: '设备名称', sortable: false },
+            { field: 'borrow_date', label: '借用日期', sortable: true },
+            { field: 'expected_return_date', label: '预计归还', sortable: true },
+            { field: 'status', label: '状态', sortable: true },
+            { field: 'operation', label: '操作', sortable: false }
+        ];
+
+        var html = '<thead><tr>';
+        columns.forEach(function(col) {
+            var sortableClass = col.sortable ? 'sortable' : '';
+            var sortedClass = borrowState.sort.field === col.field ? 'sorted' : '';
+            var icon = col.sortable ? '<span class="sort-icon">' + getSortIcon(borrowState, col.field) + '</span>' : '';
+            html += '<th class="' + sortableClass + ' ' + sortedClass + '" data-field="' + col.field + '">' +
+                escapeHtml(col.label) + icon + '</th>';
+        });
+        html += '</tr></thead>';
+        return html;
+    }
+
+    function renderEquipmentTableBody(data) {
+        if (!data || data.length === 0) {
+            return '<tbody><tr><td colspan="6">' +
+                '<div class="ad-empty">' +
+                '<div class="ad-empty-icon">📭</div>' +
+                '<div>暂无设备数据</div>' +
+                '</div></td></tr></tbody>';
+        }
+
+        var html = '<tbody>';
+        data.forEach(function(row) {
+            html += '<tr>' +
+                '<td>' + escapeHtml(row.asset_no) + '</td>' +
+                '<td>' + escapeHtml(row.name) + '</td>' +
+                '<td>' + escapeHtml(row.type) + '</td>' +
+                '<td>' + getEquipmentStatusTag(row.status) + '</td>' +
+                '<td>' + escapeHtml(row.location || '-') + '</td>' +
+                '<td class="ad-action-links">' +
+                '<a href="javascript:void(0)" class="ad-btn-link" data-action="edit-equipment" data-id="' + escapeHtml(row.id) + '">编辑</a>' +
+                '<a href="javascript:void(0)" class="ad-btn-link ad-btn-danger" data-action="delete-equipment" data-id="' + escapeHtml(row.id) + '" data-name="' + escapeHtml(row.name) + '">删除</a>' +
+                '</td>' +
+                '</tr>';
+        });
+        html += '</tbody>';
+        return html;
+    }
+
+    function renderBorrowTableBody(data) {
+        if (!data || data.length === 0) {
+            return '<tbody><tr><td colspan="8">' +
+                '<div class="ad-empty">' +
+                '<div class="ad-empty-icon">📭</div>' +
+                '<div>暂无借用记录</div>' +
+                '</div></td></tr></tbody>';
+        }
+
+        var html = '<tbody>';
+        data.forEach(function(row) {
+            html += '<tr>' +
+                '<td>' + escapeHtml(row.id) + '</td>' +
+                '<td>' + escapeHtml(row.user_name) + '</td>' +
+                '<td>' + escapeHtml(row.dept_name || '-') + '</td>' +
+                '<td>' + escapeHtml(row.equipment_name || row.name || '-') + '</td>' +
+                '<td>' + (row.borrow_date || '').substring(0, 10) + '</td>' +
+                '<td>' + (row.expected_return_date || '').substring(0, 10) + '</td>' +
+                '<td>' + getBorrowStatusTag(row.status) + '</td>' +
+                '<td class="ad-action-links">';
+
+            if (row.status === '借用中') {
+                html += '<a href="javascript:void(0)" class="ad-btn-link" data-action="return" data-id="' + escapeHtml(row.id) + '">归还</a>';
+            }
+
+            html += '</td></tr>';
+        });
+        html += '</tbody>';
+        return html;
+    }
+
+    function renderPagination(state, tabName) {
+        if (state.total === 0) return '';
+
+        var totalPages = Math.ceil(state.total / CONFIG.pageSize);
+        state.totalPages = totalPages;
+
+        var html = '<div class="ad-pagination" data-tab="' + tabName + '">' +
+            '<span class="ad-pagination-total">共 ' + state.total + ' 条</span>';
+
+        html += '<button class="ad-pagination-item" data-page="prev" ' + (state.page === 1 ? 'disabled' : '') + '>&lt;</button>';
+
+        var startPage = Math.max(1, state.page - Math.floor(CONFIG.maxPageButtons / 2));
+        var endPage = Math.min(totalPages, startPage + CONFIG.maxPageButtons - 1);
+
+        if (startPage > 1) {
+            html += '<button class="ad-pagination-item" data-page="1">1</button>';
+            if (startPage > 2) {
+                html += '<span class="ad-pagination-ellipsis">...</span>';
+            }
+        }
+
+        for (var i = startPage; i <= endPage; i++) {
+            html += '<button class="ad-pagination-item ' + (i === state.page ? 'active' : '') + '" data-page="' + i + '">' + i + '</button>';
+        }
+
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+                html += '<span class="ad-pagination-ellipsis">...</span>';
+            }
+            html += '<button class="ad-pagination-item" data-page="' + totalPages + '">' + totalPages + '</button>';
+        }
+
+        html += '<button class="ad-pagination-item" data-page="next" ' + (state.page === totalPages ? 'disabled' : '') + '>&gt;</button>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderLoadingOverlay() {
+        return '<div class="ad-loading-overlay" id="loadingOverlay">' +
+            '<div class="ad-loading-content">' +
+            '<span class="ad-loading"></span>' +
+            '<span>加载中...</span>' +
+            '</div>' +
+            '</div>';
+    }
+
+    // ==================== 消息提示 ====================
+    function showMessage(text, type) {
+        type = type || 'success';
+        var icons = {
+            success: '✓',
+            error: '✕',
+            warning: '!'
+        };
+        var msgEl = document.createElement('div');
+        msgEl.className = 'ad-message ad-message-' + type;
+        msgEl.innerHTML = '<span class="ad-message-icon">' + icons[type] + '</span><span>' + escapeHtml(text) + '</span>';
+        document.body.appendChild(msgEl);
+
+        setTimeout(function() {
+            msgEl.style.opacity = '0';
+            msgEl.style.transition = 'opacity .3s';
+            setTimeout(function() {
+                if (msgEl.parentNode) {
+                    msgEl.parentNode.removeChild(msgEl);
+                }
+            }, 300);
+        }, 2500);
+    }
+
+    function showLoading(show) {
+        var loadingEl = document.getElementById('loadingOverlay');
+        if (loadingEl) {
+            loadingEl.style.display = show ? 'flex' : 'none';
+        } else if (show) {
+            var overlay = document.createElement('div');
+            overlay.id = 'loadingOverlay';
+            overlay.className = 'ad-loading-overlay';
+            overlay.style.display = 'flex';
+            overlay.innerHTML = '<div class="ad-loading-content"><span class="ad-loading"></span><span>加载中...</span></div>';
+            document.body.appendChild(overlay);
+        }
+    }
+
+    // ==================== 弹窗功能 ====================
+    function openModal(title, url) {
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalFrame').src = url;
+        document.getElementById('modalMask').style.display = 'flex';
+    }
+
+    function closeModal() {
+        document.getElementById('modalMask').style.display = 'none';
+        document.getElementById('modalFrame').src = '';
+    }
+
+    function openBatchModal() {
+        document.getElementById('batchModalFrame').src =
+            PATH.apiBase + '/view/report?viewlet=' + PATH.getTemplatePath('equipment_batch.cpt') + '&op=write';
+        document.getElementById('batchModalMask').style.display = 'flex';
+    }
+
+    function closeBatchModal() {
+        document.getElementById('batchModalMask').style.display = 'none';
+        document.getElementById('batchModalFrame').src = '';
+    }
+
+    // ==================== 删除确认 ====================
+    var pendingDeleteId = null;
+    var pendingDeleteType = null;
+
+    function showConfirmDialog(id, name, type) {
+        pendingDeleteId = id;
+        pendingDeleteType = type;
+        document.getElementById('confirmContent').textContent = '确定要删除设备 "' + name + '" 吗？此操作不可恢复。';
+        document.getElementById('confirmMask').style.display = 'flex';
+    }
+
+    function hideConfirmDialog() {
+        document.getElementById('confirmMask').style.display = 'none';
+        pendingDeleteId = null;
+        pendingDeleteType = null;
+    }
+
+    function doDelete() {
+        if (!pendingDeleteId) return;
+
+        var deleteId = pendingDeleteId;
+        hideConfirmDialog();
+        showLoading(true);
+
+        executeData('sp_delete', [
+            { name: 'p_table', type: 'String', value: 'equipment' },
+            { name: 'p_id', type: 'String', value: deleteId }
+        ]).then(function(result) {
+            showLoading(false);
+
+            if (result.success) {
+                showMessage('删除成功', 'success');
+                loadEquipmentData();
+            } else {
+                // 根据错误层级显示不同提示
+                var errorMsg = result.error || result.message || '删除失败';
+                showMessage(errorMsg, 'error');
+
+                // 会话过期特殊处理
+                if (result.needLogin) {
+                    if (confirm('会话已过期，是否重新登录？')) {
+                        window.location.href = PATH.apiBase + '/login';
+                    }
+                }
+            }
+        });
+    }
+
+    // ==================== 刷新表格 ====================
+    function refreshEquipmentTable() {
+        var table = document.getElementById('equipmentTable');
+        if (table) {
+            table.innerHTML = renderEquipmentTableHeader() + renderEquipmentTableBody(equipmentState.data);
+            bindEquipmentSortEvents();
+            bindEquipmentActionEvents();
+        }
+
+        var pagination = document.querySelector('.ad-pagination[data-tab="equipment"]');
+        var paginationHtml = renderPagination(equipmentState, 'equipment');
+        if (pagination) {
+            pagination.outerHTML = paginationHtml;
+        } else if (paginationHtml) {
+            // 分页不存在但需要显示，插入到卡片后面
+            var card = table ? table.closest('.ad-card') : null;
+            if (card && card.parentNode) {
+                card.insertAdjacentHTML('afterend', paginationHtml);
+            }
+        }
+        if (paginationHtml) {
+            bindPaginationEvents('equipment');
+        }
+    }
+
+    function refreshBorrowTable() {
+        var table = document.getElementById('borrowTable');
+        if (table) {
+            table.innerHTML = renderBorrowTableHeader() + renderBorrowTableBody(borrowState.data);
+            bindBorrowSortEvents();
+            bindBorrowActionEvents();
+        }
+
+        var pagination = document.querySelector('.ad-pagination[data-tab="borrow"]');
+        var paginationHtml = renderPagination(borrowState, 'borrow');
+        if (pagination) {
+            pagination.outerHTML = paginationHtml;
+        } else if (paginationHtml) {
+            // 分页不存在但需要显示，插入到卡片后面
+            var card = table ? table.closest('.ad-card') : null;
+            if (card && card.parentNode) {
+                card.insertAdjacentHTML('afterend', paginationHtml);
+            }
+        }
+        if (paginationHtml) {
+            bindPaginationEvents('borrow');
+        }
+    }
+
+    // ==================== Tab 切换 ====================
+    function switchTab(tab) {
+        currentTab = tab;
+        document.getElementById('tabEquipment').className = tab === 'equipment' ? 'ad-tab active' : 'ad-tab';
+        document.getElementById('tabBorrow').className = tab === 'borrow' ? 'ad-tab active' : 'ad-tab';
+
+        var equipmentContent = document.getElementById('equipmentContent');
+        var borrowContent = document.getElementById('borrowContent');
+
+        if (tab === 'equipment') {
+            equipmentContent.className = 'ad-tab-content active';
+            borrowContent.className = 'ad-tab-content';
+            if (equipmentState.data.length === 0) {
+                loadEquipmentData();
+            }
+        } else {
+            equipmentContent.className = 'ad-tab-content';
+            borrowContent.className = 'ad-tab-content active';
+            if (borrowState.data.length === 0) {
+                loadBorrowData();
+            }
+        }
+    }
+
+    // ==================== 事件绑定 ====================
+    function bindTabEvents() {
+        document.getElementById('tabEquipment').onclick = function() { switchTab('equipment'); };
+        document.getElementById('tabBorrow').onclick = function() { switchTab('borrow'); };
+    }
+
+    function bindEquipmentFilterEvents() {
+        document.getElementById('btnSearchEquipment').onclick = function() {
+            equipmentState.filters.keyword = document.getElementById('filterKeyword').value;
+            equipmentState.filters.type = document.getElementById('filterType').value;
+            equipmentState.filters.status = document.getElementById('filterStatus').value;
+            equipmentState.page = 1;
+            loadEquipmentData();
+        };
+
+        document.getElementById('filterKeyword').onkeypress = function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('btnSearchEquipment').click();
+            }
+        };
+
+        document.getElementById('btnResetEquipment').onclick = function() {
+            equipmentState.filters = { keyword: '', type: '', status: '' };
+            equipmentState.sort = { field: 'id', order: 'DESC' };
+            equipmentState.page = 1;
+            document.getElementById('filterKeyword').value = '';
+            document.getElementById('filterType').value = '';
+            document.getElementById('filterStatus').value = '';
+            loadEquipmentData();
+        };
+
+        document.getElementById('btnAddEquipment').onclick = function() {
+            openModal('新增设备', PATH.apiBase + '/view/report?viewlet=' + PATH.getTemplatePath('equipment_form.cpt') + '&op=write');
+        };
+
+        document.getElementById('btnBatchImport').onclick = openBatchModal;
+    }
+
+    function bindBorrowFilterEvents() {
+        document.getElementById('btnSearchBorrow').onclick = function() {
+            borrowState.filters.user_name = document.getElementById('filterUserName').value;
+            borrowState.filters.status = document.getElementById('filterBorrowStatus').value;
+            borrowState.page = 1;
+            loadBorrowData();
+        };
+
+        document.getElementById('filterUserName').onkeypress = function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('btnSearchBorrow').click();
+            }
+        };
+
+        document.getElementById('btnResetBorrow').onclick = function() {
+            borrowState.filters = { user_name: '', status: '', date_from: '', date_to: '' };
+            borrowState.sort = { field: 'id', order: 'DESC' };
+            borrowState.page = 1;
+            document.getElementById('filterUserName').value = '';
+            document.getElementById('filterBorrowStatus').value = '';
+            loadBorrowData();
+        };
+
+        document.getElementById('btnApplyBorrow').onclick = function() {
+            openModal('借用申请', PATH.apiBase + '/view/report?viewlet=' + PATH.getTemplatePath('borrow_apply.cpt') + '&op=write');
+        };
+    }
+
+    function bindEquipmentSortEvents() {
+        var ths = document.querySelectorAll('#equipmentTable th.sortable');
+        for (var i = 0; i < ths.length; i++) {
+            ths[i].onclick = function() {
+                var field = this.getAttribute('data-field');
+                if (equipmentState.sort.field === field) {
+                    equipmentState.sort.order = equipmentState.sort.order === 'ASC' ? 'DESC' : 'ASC';
+                } else {
+                    equipmentState.sort.field = field;
+                    equipmentState.sort.order = 'DESC';
+                }
+                equipmentState.page = 1;
+                loadEquipmentData();
+            };
+        }
+    }
+
+    function bindBorrowSortEvents() {
+        var ths = document.querySelectorAll('#borrowTable th.sortable');
+        for (var i = 0; i < ths.length; i++) {
+            ths[i].onclick = function() {
+                var field = this.getAttribute('data-field');
+                if (borrowState.sort.field === field) {
+                    borrowState.sort.order = borrowState.sort.order === 'ASC' ? 'DESC' : 'ASC';
+                } else {
+                    borrowState.sort.field = field;
+                    borrowState.sort.order = 'DESC';
+                }
+                borrowState.page = 1;
+                loadBorrowData();
+            };
+        }
+    }
+
+    function bindPaginationEvents(tabName) {
+        var selector = '.ad-pagination[data-tab="' + tabName + '"] .ad-pagination-item';
+        var items = document.querySelectorAll(selector);
+        var state = tabName === 'equipment' ? equipmentState : borrowState;
+
+        for (var i = 0; i < items.length; i++) {
+            items[i].onclick = function() {
+                if (this.disabled) return;
+                var page = this.getAttribute('data-page');
+                var currentState = tabName === 'equipment' ? equipmentState : borrowState;
+                if (page === 'prev') {
+                    if (currentState.page > 1) {
+                        if (tabName === 'equipment') {
+                            loadEquipmentData(currentState.page - 1);
+                        } else {
+                            loadBorrowData(currentState.page - 1);
+                        }
+                    }
+                } else if (page === 'next') {
+                    if (currentState.page < currentState.totalPages) {
+                        if (tabName === 'equipment') {
+                            loadEquipmentData(currentState.page + 1);
+                        } else {
+                            loadBorrowData(currentState.page + 1);
+                        }
+                    }
+                } else {
+                    if (tabName === 'equipment') {
+                        loadEquipmentData(parseInt(page));
+                    } else {
+                        loadBorrowData(parseInt(page));
+                    }
+                }
+            };
+        }
+    }
+
+    function bindEquipmentActionEvents() {
+        var table = document.getElementById('equipmentTable');
+        if (table) {
+            table.onclick = function(e) {
+                var target = e.target;
+                if (target.tagName === 'A' && target.hasAttribute('data-action')) {
+                    var action = target.getAttribute('data-action');
+                    var id = target.getAttribute('data-id');
+                    if (action === 'edit-equipment') {
+                        openModal('编辑设备', PATH.apiBase + '/view/report?viewlet=' + PATH.getTemplatePath('equipment_form.cpt') + '&id=' + id + '&op=write');
+                    } else if (action === 'delete-equipment') {
+                        var name = target.getAttribute('data-name');
+                        showConfirmDialog(id, name, 'equipment');
+                    }
+                }
+            };
+        }
+    }
+
+    function bindBorrowActionEvents() {
+        var table = document.getElementById('borrowTable');
+        if (table) {
+            table.onclick = function(e) {
+                var target = e.target;
+                if (target.tagName === 'A' && target.hasAttribute('data-action')) {
+                    var action = target.getAttribute('data-action');
+                    var id = target.getAttribute('data-id');
+                    if (action === 'return') {
+                        openModal('归还操作', PATH.apiBase + '/view/report?viewlet=' + PATH.getTemplatePath('borrow_return.cpt') + '&id=' + id + '&op=write');
+                    }
+                }
+            };
+        }
+    }
+
+    function bindModalEvents() {
+        document.getElementById('modalClose').onclick = closeModal;
+        document.getElementById('modalMask').onclick = function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        };
+
+        document.getElementById('confirmOk').onclick = doDelete;
+        document.getElementById('confirmCancel').onclick = hideConfirmDialog;
+
+        document.getElementById('batchModalClose').onclick = closeBatchModal;
+        document.getElementById('batchModalMask').onclick = function(e) {
+            if (e.target === this) {
+                closeBatchModal();
+            }
+        };
+    }
+
+    // ==================== 父页面接口 ====================
+    window.closeModal = closeModal;
+    window.refreshList = function(tab) {
+        closeModal();
+        if (tab === 'equipment') {
+            loadEquipmentData();
+        } else if (tab === 'borrow') {
+            loadBorrowData();
+        } else {
+            if (currentTab === 'equipment') {
+                loadEquipmentData();
+            } else {
+                loadBorrowData();
+            }
+        }
+    };
+    window.closeBatchImportModal = function() {
+        closeBatchModal();
+        loadEquipmentData();
+    };
+
+    // ==================== 初始化 ====================
+    function init() {
+        document.body.innerHTML = '<div style="padding:48px;text-align:center;"><span style="display:inline-block;width:24px;height:24px;border:3px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:ad-spin .8s linear infinite;"></span> 页面加载中...</div>';
+
+        // 加载字典数据
+        fetchData('dict_type', [], function(types) {
+            fetchData('dict_equipment_status', [], function(equipmentStatuses) {
+                fetchData('dict_borrow_status', [], function(borrowStatuses) {
+                    fetchData('equipment_stats', [], function(equipmentStats) {
+                        fetchData('borrow_stats', [], function(borrowStats) {
+                            // 渲染页面
+                            var html = renderStyles() +
+                                renderLoadingOverlay() +
+                                '<div class="ad-container">' +
+                                renderHeader() +
+                                renderTabs() +
+
+                                // 设备管理 Tab
+                                '<div class="ad-tab-content active" id="equipmentContent">' +
+                                renderEquipmentStats(equipmentStats[0] || {}) +
+                                renderEquipmentFilterBar(types, equipmentStatuses) +
+                                '<div class="ad-card">' +
+                                '<div class="ad-card-body" style="padding:0">' +
+                                '<div class="ad-table-wrapper">' +
+                                '<table class="ad-table" id="equipmentTable">' +
+                                renderEquipmentTableHeader() +
+                                '<tbody><tr><td colspan="6" style="text-align:center;padding:32px;">加载中...</td></tr></tbody>' +
+                                '</table>' +
+                                '</div>' +
+                                '</div>' +
+                                '</div>' +
+                                renderPagination(equipmentState, 'equipment') +
+                                '</div>' +
+
+                                // 借用记录 Tab
+                                '<div class="ad-tab-content" id="borrowContent">' +
+                                renderBorrowStats(borrowStats[0] || {}) +
+                                renderBorrowFilterBar(borrowStatuses) +
+                                '<div class="ad-card">' +
+                                '<div class="ad-card-body" style="padding:0">' +
+                                '<div class="ad-table-wrapper">' +
+                                '<table class="ad-table" id="borrowTable">' +
+                                renderBorrowTableHeader() +
+                                '<tbody><tr><td colspan="8" style="text-align:center;padding:32px;">切换到借用记录 Tab 查看数据</td></tr></tbody>' +
+                                '</table>' +
+                                '</div>' +
+                                '</div>' +
+                                '</div>' +
+                                renderPagination(borrowState, 'borrow') +
+                                '</div>' +
+
+                                '<div class="ad-footer">江城智造局 · 借用管理系统 v1.0</div>' +
+                                '</div>' +
+
+                                // 普通弹窗
+                                '<div class="ad-modal-mask" id="modalMask">' +
+                                '<div class="ad-modal">' +
+                                '<div class="ad-modal-header">' +
+                                '<span class="ad-modal-title" id="modalTitle">标题</span>' +
+                                '<button class="ad-modal-close" id="modalClose">&times;</button>' +
+                                '</div>' +
+                                '<div class="ad-modal-body"><iframe id="modalFrame"></iframe></div>' +
+                                '</div>' +
+                                '</div>' +
+
+                                // 批量导入弹窗
+                                '<div class="ad-modal-mask" id="batchModalMask">' +
+                                '<div class="ad-modal ad-modal-large">' +
+                                '<div class="ad-modal-header">' +
+                                '<span class="ad-modal-title">批量导入设备</span>' +
+                                '<button class="ad-modal-close" id="batchModalClose">&times;</button>' +
+                                '</div>' +
+                                '<div class="ad-modal-body"><iframe id="batchModalFrame"></iframe></div>' +
+                                '</div>' +
+                                '</div>' +
+
+                                // 确认弹窗
+                                '<div class="ad-confirm-mask" id="confirmMask">' +
+                                '<div class="ad-confirm">' +
+                                '<div class="ad-confirm-title">确认删除</div>' +
+                                '<div class="ad-confirm-content" id="confirmContent">确定要删除这条记录吗？</div>' +
+                                '<div class="ad-confirm-btns">' +
+                                '<button class="ad-confirm-btn ad-confirm-btn-cancel" id="confirmCancel">取消</button>' +
+                                '<button class="ad-confirm-btn ad-confirm-btn-ok" id="confirmOk">确定</button>' +
+                                '</div>' +
+                                '</div>' +
+                                '</div>';
+
+                            document.body.innerHTML = html;
+
+                            // 绑定事件
+                            bindTabEvents();
+                            bindEquipmentFilterEvents();
+                            bindBorrowFilterEvents();
+                            bindModalEvents();
+
+                            // 加载设备数据
+                            loadEquipmentData();
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    init();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<ToolBars/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[加载中...]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand/>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttMark">
+<TemplateIdAttMark TemplateId="jiangcheng_borrow_list_v1"/>
+</TemplateIdAttMark>
+</WorkBook>

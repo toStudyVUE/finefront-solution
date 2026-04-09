@@ -1,0 +1,1109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * API调度中心 - Ant Design 5.0 风格
+ * 功能：接口列表 + 请求配置 + 响应展示 + 请求日志
+ *
+ * 架构说明：
+ * 所有外部API调用必须通过帆软代理模板(api_agent.cpt)进行
+ * 调用链路：前端 → /api/report → api_agent.cpt → JSON数据集 → 外部API
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })()
+    };
+
+    // ==================== API配置数据 ====================
+    // 注意：所有接口通过帆软代理模板(api_agent.cpt)调用
+    var API_CONFIG = {
+        standard: {
+            label: '标准请求',
+            apis: [
+                {
+                    name: '创建用户',
+                    url: 'http://localhost:3200/api/user/create',
+                    method: 'POST',
+                    body: { name: '张三', email: 'zhangsan@example.com', phone: '13800138000', department: '技术部' }
+                },
+                {
+                    name: '批量同步',
+                    url: 'http://localhost:3200/api/batch/sync',
+                    method: 'POST',
+                    body: [{ id: 1, name: '项目A', status: 'active' }, { id: 2, name: '项目B', status: 'pending' }]
+                }
+            ]
+        },
+        auth: {
+            label: '认证方式',
+            apis: [
+                {
+                    name: 'Token认证',
+                    url: 'http://localhost:3200/api/auth/token',
+                    method: 'POST',
+                    body: { action: 'get_profile', token: 'valid-token-123' },
+                    note: '代理模式：token需放入body中传递'
+                },
+                {
+                    name: 'URL签名',
+                    url: 'http://localhost:3200/api/auth/sign',
+                    method: 'POST',
+                    body: { action: 'query', app_id: 'xxx', sign: '计算签名' },
+                    note: '签名参数需放入body中传递'
+                }
+            ]
+        },
+        error: {
+            label: '错误处理',
+            apis: [
+                {
+                    name: 'HTTP错误',
+                    url: 'http://localhost:3200/api/error/http',
+                    method: 'POST',
+                    body: { scenario: 'server_error' },
+                    note: 'scenario: bad_request, unauthorized, forbidden, not_found, server_error, bad_gateway, service_unavailable'
+                },
+                {
+                    name: '业务错误',
+                    url: 'http://localhost:3200/api/error/business',
+                    method: 'POST',
+                    body: { scenario: 'insufficient_balance' },
+                    note: 'scenario: insufficient_balance, user_not_found, duplicate_record, validation_failed'
+                },
+                {
+                    name: '请求超时',
+                    url: 'http://localhost:3200/api/error/timeout',
+                    method: 'POST',
+                    body: { delay: 10 },
+                    timeout: 5000,
+                    note: '延迟10秒返回，前端超时设5秒'
+                }
+            ]
+        },
+        special: {
+            label: '特殊场景',
+            apis: [
+                {
+                    name: '纯文本响应',
+                    url: 'http://localhost:3200/api/legacy/submit',
+                    method: 'POST',
+                    body: { data: 'test' },
+                    note: '返回纯文本格式'
+                },
+                {
+                    name: 'XML响应',
+                    url: 'http://localhost:3200/api/xml/query',
+                    method: 'POST',
+                    body: { query: 'users' },
+                    note: '返回XML格式'
+                },
+                {
+                    name: '大数据量',
+                    url: 'http://localhost:3200/api/large/list',
+                    method: 'POST',
+                    body: { count: 100 },
+                    note: '返回100条数据'
+                }
+            ]
+        }
+    };
+
+    // ==================== 状态管理 ====================
+    var state = {
+        currentApi: null,
+        logs: [],
+        loading: false
+    };
+
+    // ==================== 工具函数 ====================
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"']/g, function(s) {
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return map[s];
+        });
+    }
+
+    function formatJson(obj) {
+        try {
+            return JSON.stringify(obj, null, 2);
+        } catch(e) {
+            return String(obj);
+        }
+    }
+
+    function getCurrentTime() {
+        var now = new Date();
+        var h = String(now.getHours()).padStart(2, '0');
+        var m = String(now.getMinutes()).padStart(2, '0');
+        var s = String(now.getSeconds()).padStart(2, '0');
+        return h + ':' + m + ':' + s;
+    }
+
+    function getUrlPath(url) {
+        try {
+            var u = new URL(url);
+            return u.pathname;
+        } catch(e) {
+            return url;
+        }
+    }
+
+    // ==================== 外部API调用封装（通过帆软代理） ====================
+    /**
+     * 通过帆软代理模板调用外部API
+     * 调用链路：前端 → /api/report → api_agent.cpt → JSON数据集 → 外部API
+     *
+     * @param {string} url - 外部API地址
+     * @param {object} body - 请求体
+     * @param {object} options - 配置项（timeout等，注意：headers需要在外部API支持的情况下才能传递）
+     * @returns {Promise} {success, data, error, code, layer, duration}
+     */
+    function callExternalApi(url, body, options) {
+        options = options || {};
+        var timeout = options.timeout || 30000;
+        var startTime = Date.now();
+
+        return new Promise(function(resolve) {
+            // 参数校验
+            if (!url) {
+                resolve({
+                    success: false,
+                    error: '未配置接口URL',
+                    code: 'CONFIG_ERROR',
+                    layer: 'config',
+                    duration: 0
+                });
+                return;
+            }
+
+            // 通过帆软报表结果JSON服务API调用代理模板
+            $.ajax({
+                url: PATH.apiBase + '/api/report',
+                type: 'POST',
+                contentType: 'application/json',
+                timeout: timeout,
+                data: JSON.stringify({
+                    report_path: 'api/api_agent.cpt',
+                    start_page: 1,
+                    end_page: 1,
+                    parameters: [
+                        { name: 'p_url', type: 'String', value: url },
+                        { name: 'p_body', type: 'String', value: body ? JSON.stringify(body) : '{}' }
+                    ]
+                }),
+                success: function(res) {
+                    var duration = Date.now() - startTime;
+                    resolve(parseProxyResponse(res, duration));
+                },
+                error: function(xhr, textStatus) {
+                    var duration = Date.now() - startTime;
+                    resolve(handleProxyError(xhr, textStatus, duration));
+                }
+            });
+        });
+    }
+
+    /**
+     * 解析帆软代理响应
+     */
+    function parseProxyResponse(res, duration) {
+        // 如果res是字符串，先解析为JSON对象
+        if (typeof res === 'string') {
+            try {
+                res = JSON.parse(res);
+            } catch (e) {
+                return {
+                    success: false,
+                    error: '帆软代理响应解析失败',
+                    code: 'PARSE_ERROR',
+                    layer: 'proxy',
+                    duration: duration,
+                    raw: res
+                };
+            }
+        }
+
+        // 帆软API响应格式：{ err_code: 0, data: [{ A1: "外部API原始响应字符串" }] }
+        if (res.err_code !== 0) {
+            return {
+                success: false,
+                error: res.err_msg || '帆软代理调用失败',
+                code: 'PROXY_ERROR',
+                layer: 'proxy',
+                duration: duration,
+                raw: res
+            };
+        }
+
+        if (!res.data || res.data.length === 0) {
+            return {
+                success: false,
+                error: '代理返回数据为空',
+                code: 'EMPTY_RESPONSE',
+                layer: 'proxy',
+                duration: duration,
+                raw: res
+            };
+        }
+
+        // A1单元格包含外部API的原始响应
+        var rawResponse = res.data[0].A1;
+        if (rawResponse === undefined || rawResponse === null) {
+            return {
+                success: false,
+                error: '代理返回A1单元格为空',
+                code: 'EMPTY_A1',
+                layer: 'proxy',
+                duration: duration,
+                raw: res
+            };
+        }
+
+        // 尝试解析外部API响应
+        try {
+            var parsed = typeof rawResponse === 'string' ? JSON.parse(rawResponse) : rawResponse;
+            return parseApiResponse(parsed, 200, duration);
+        } catch (e) {
+            // 非JSON响应，可能是纯文本或XML
+            return {
+                success: true,
+                format: 'text',
+                data: String(rawResponse),
+                httpStatus: 200,
+                duration: duration,
+                raw: rawResponse
+            };
+        }
+    }
+
+    /**
+     * 处理代理层错误
+     */
+    function handleProxyError(xhr, textStatus, duration) {
+        // 超时错误
+        if (textStatus === 'timeout') {
+            return {
+                success: false,
+                error: '请求超时',
+                code: 'TIMEOUT',
+                layer: 'network',
+                duration: duration
+            };
+        }
+
+        // 网络错误
+        if (xhr.status === 0) {
+            return {
+                success: false,
+                error: '网络连接失败，请检查帆软服务是否正常运行',
+                code: 'NETWORK_ERROR',
+                layer: 'network',
+                duration: duration
+            };
+        }
+
+        // 会话过期
+        if (xhr.status === 401) {
+            return {
+                success: false,
+                error: '会话已过期，请重新登录',
+                code: 'SESSION_EXPIRED',
+                layer: 'network',
+                needLogin: true,
+                duration: duration
+            };
+        }
+
+        // 其他HTTP错误
+        var errorMessages = {
+            403: '无权限访问',
+            404: '接口不存在',
+            500: '服务器内部错误',
+            502: '网关错误',
+            503: '服务不可用'
+        };
+
+        return {
+            success: false,
+            error: errorMessages[xhr.status] || ('HTTP错误: ' + xhr.status),
+            code: 'HTTP_' + xhr.status,
+            layer: 'network',
+            duration: duration
+        };
+    }
+
+    /**
+     * 解析API响应
+     */
+    function parseApiResponse(res, httpStatus, duration) {
+        // ========== 非对象响应（纯文本、XML等） ==========
+        if (typeof res !== 'object') {
+            return {
+                success: true,
+                format: 'text',
+                data: String(res),
+                httpStatus: httpStatus,
+                duration: duration,
+                raw: res
+            };
+        }
+
+        // ========== 检查HTTP状态码 ==========
+        if (httpStatus >= 400) {
+            var httpErrors = {
+                400: '请求参数错误',
+                401: '未授权访问',
+                403: '禁止访问',
+                404: '资源不存在',
+                500: '服务器内部错误',
+                502: '网关错误',
+                503: '服务不可用'
+            };
+            return {
+                success: false,
+                error: httpErrors[httpStatus] || ('HTTP错误: ' + httpStatus),
+                code: 'HTTP_' + httpStatus,
+                layer: 'http',
+                httpStatus: httpStatus,
+                duration: duration,
+                raw: res
+            };
+        }
+
+        // ========== 解析业务响应 ==========
+        // 兼容不同的成功标识格式
+        var isSuccess = res.success === true ||
+                       res.success === 'true' ||
+                       res.err_code === 0 ||
+                       res.code === 200 ||
+                       res.code === '200';
+
+        if (!isSuccess) {
+            return {
+                success: false,
+                error: res.message || res.msg || res.err_msg || res.error || '业务错误',
+                code: res.code || 'BUSINESS_ERROR',
+                layer: 'business',
+                httpStatus: httpStatus,
+                data: res.data,
+                duration: duration,
+                raw: res
+            };
+        }
+
+        // ========== 成功 ==========
+        return {
+            success: true,
+            data: res.data !== undefined ? res.data : res,
+            message: res.message || res.msg || '操作成功',
+            httpStatus: httpStatus,
+            duration: duration,
+            raw: res
+        };
+    }
+
+    /**
+     * 处理网络层错误
+     */
+    function handleNetworkError(xhr, textStatus, duration) {
+        // 超时错误
+        if (textStatus === 'timeout') {
+            return {
+                success: false,
+                error: '请求超时',
+                code: 'TIMEOUT',
+                layer: 'network',
+                duration: duration
+            };
+        }
+
+        // 跨域错误或网络断开
+        if (xhr.status === 0) {
+            return {
+                success: false,
+                error: '网络连接失败或跨域错误。如需跨域调用，请确保目标服务器支持CORS，或使用后端代理。',
+                code: 'NETWORK_ERROR',
+                layer: 'network',
+                duration: duration,
+                hint: '跨域解决方案：1. 目标API支持CORS 2. 使用帆软JSON数据集代理'
+            };
+        }
+
+        // 帆软会话过期
+        if (xhr.status === 401) {
+            return {
+                success: false,
+                error: '会话已过期，请重新登录',
+                code: 'SESSION_EXPIRED',
+                layer: 'network',
+                needLogin: true,
+                duration: duration
+            };
+        }
+
+        // 其他HTTP错误
+        var errorMessages = {
+            403: '无权限访问',
+            404: '接口不存在',
+            500: '服务器内部错误',
+            502: '网关错误',
+            503: '服务不可用'
+        };
+
+        return {
+            success: false,
+            error: errorMessages[xhr.status] || ('HTTP错误: ' + xhr.status),
+            code: 'HTTP_' + xhr.status,
+            layer: 'network',
+            duration: duration
+        };
+    }
+
+    // ==================== 渲染样式 ====================
+    function renderStyles() {
+        return '<style>' +
+            '*{box-sizing:border-box;margin:0;padding:0}' +
+            'html,body{height:auto!important;min-height:100%;overflow-y:auto!important;overflow-x:hidden}' +
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88);line-height:1.5714285714285714}' +
+            ':root{--ant-primary:#1677ff;--ant-primary-hover:#4096ff;--ant-primary-active:#0958d9;--ant-border-radius:6px;--ant-shadow:0 1px 2px 0 rgba(0,0,0,.03),0 1px 6px -1px rgba(0,0,0,.02),0 2px 4px 0 rgba(0,0,0,.02)}' +
+            '.fr-content,.fr-report,.content-container{overflow:visible!important;height:auto!important}' +
+            '.ad-container{max-width:1400px;margin:0 auto;padding:24px;padding-bottom:60px}' +
+
+            // 卡片
+            '.ad-card{background:#fff;border-radius:var(--ant-border-radius);box-shadow:var(--ant-shadow);margin-bottom:16px}' +
+            '.ad-card-body{padding:16px}' +
+            '.ad-card-header{padding:12px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}' +
+            '.ad-card-title{font-size:16px;font-weight:600;color:rgba(0,0,0,.88)}' +
+
+            // 页面标题
+            '.ad-page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}' +
+            '.ad-page-title{font-size:24px;font-weight:600;color:rgba(0,0,0,.88)}' +
+
+            // 架构说明
+            '.ad-arch{padding:12px 16px;background:rgba(22,119,255,.04);border-radius:var(--ant-border-radius);border:1px solid rgba(22,119,255,.15);margin-bottom:16px;font-size:13px;color:rgba(0,0,0,.65)}' +
+            '.ad-arch-title{font-weight:600;margin-bottom:4px;color:var(--ant-primary)}' +
+            '.ad-arch-flow{display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px}' +
+            '.ad-arch-node{padding:2px 8px;background:#fff;border-radius:4px;border:1px solid var(--ant-color-border,#d9d9d9)}' +
+            '.ad-arch-arrow{color:rgba(0,0,0,.45)}' +
+
+            // 布局
+            '.ad-main-layout{display:flex;gap:16px}' +
+            '.ad-sidebar{width:280px;flex-shrink:0}' +
+            '.ad-main-content{flex:1;min-width:0}' +
+
+            // 接口分组
+            '.api-group{margin-bottom:12px}' +
+            '.api-group-header{padding:8px 12px;background:#fafafa;border-radius:var(--ant-border-radius);cursor:pointer;display:flex;align-items:center;justify-content:space-between;font-weight:500;color:rgba(0,0,0,.88);transition:all .2s}' +
+            '.api-group-header:hover{background:#f0f0f0}' +
+            '.api-group-header .arrow{transition:transform .2s;font-size:12px;color:rgba(0,0,0,.45)}' +
+            '.api-group.collapsed .arrow{transform:rotate(-90deg)}' +
+            '.api-group.collapsed .api-group-content{display:none}' +
+            '.api-group-content{margin-top:4px;padding-left:12px}' +
+
+            // API列表项
+            '.api-item{padding:8px 12px;border-radius:4px;cursor:pointer;font-size:14px;color:rgba(0,0,0,.65);transition:all .2s;margin-bottom:2px}' +
+            '.api-item:hover{background:#e6f4ff;color:#1677ff}' +
+            '.api-item.active{background:#e6f4ff;color:#1677ff;font-weight:500}' +
+
+            // 表单
+            '.ad-form-item{margin-bottom:16px}' +
+            '.ad-form-label{display:block;font-size:14px;color:rgba(0,0,0,.88);margin-bottom:8px;font-weight:500}' +
+            '.ad-form-label .note{font-weight:400;color:rgba(0,0,0,.45);font-size:12px;margin-left:8px}' +
+            '.ad-input{width:100%;height:32px;padding:4px 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none;transition:all .2s}' +
+            '.ad-input:hover{border-color:var(--ant-primary)}' +
+            '.ad-input:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-input:disabled{background:#f5f5f5;color:rgba(0,0,0,.25)}' +
+
+            // 下拉选择
+            '.ad-select{width:100%;height:32px;padding:0 24px 0 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23999\' stroke-width=\'2\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E") no-repeat right 8px center;appearance:none;cursor:pointer;transition:all .2s}' +
+            '.ad-select:hover{border-color:var(--ant-primary)}' +
+            '.ad-select:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+
+            // 文本域
+            '.ad-textarea{width:100%;min-height:120px;padding:8px 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none;resize:vertical;font-family:monospace;transition:all .2s}' +
+            '.ad-textarea:hover{border-color:var(--ant-primary)}' +
+            '.ad-textarea:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+
+            // 按钮
+            '.ad-btn{height:32px;padding:4px 15px;font-size:14px;border-radius:var(--ant-border-radius);border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px;transition:all .2s}' +
+            '.ad-btn-primary{background:var(--ant-primary);color:#fff;border-color:var(--ant-primary)}' +
+            '.ad-btn-primary:hover{background:var(--ant-primary-hover)}' +
+            '.ad-btn-primary:active{background:var(--ant-primary-active)}' +
+            '.ad-btn-primary:disabled{background:#d9d9d9;border-color:#d9d9d9;color:rgba(0,0,0,.25);cursor:not-allowed}' +
+            '.ad-btn-default{background:#fff;color:rgba(0,0,0,.88);border-color:#d9d9d9}' +
+            '.ad-btn-default:hover{color:var(--ant-primary);border-color:var(--ant-primary)}' +
+
+            // 响应结果区域
+            '.response-header{display:flex;align-items:center;gap:16px;padding:12px 16px;background:#fafafa;border-bottom:1px solid #f0f0f0}' +
+            '.response-status{font-weight:600}' +
+            '.response-status.success{color:#52c41a}' +
+            '.response-status.error{color:#ff4d4f}' +
+            '.response-status.timeout{color:#faad14}' +
+            '.response-duration{color:rgba(0,0,0,.45);font-size:13px}' +
+            '.response-time{color:rgba(0,0,0,.45);font-size:13px;margin-left:auto}' +
+            '.response-body{padding:16px;max-height:400px;overflow:auto;background:#fafafa}' +
+            '.response-body pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:monospace;font-size:13px;line-height:1.6}' +
+            '.response-empty{text-align:center;padding:48px;color:rgba(0,0,0,.25)}' +
+            '.response-layer{padding:4px 8px;border-radius:4px;font-size:12px;font-weight:500}' +
+            '.response-layer.http{background:#fff2f0;color:#ff4d4f}' +
+            '.response-layer.business{background:#e6f4ff;color:#1677ff}' +
+            '.response-layer.network{background:#fff7e6;color:#d46b08}' +
+            '.response-layer.config{background:#f0f0f0;color:#666}' +
+            '.response-layer.proxy{background:#fff0f6;color:#c41d7f}' +
+
+            // 日志区域
+            '.log-list{max-height:200px;overflow-y:auto}' +
+            '.log-item{padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:13px;display:flex;align-items:center;gap:12px;font-family:monospace}' +
+            '.log-item:last-child{border-bottom:none}' +
+            '.log-item:hover{background:#fafafa}' +
+            '.log-time{color:rgba(0,0,0,.45);min-width:70px}' +
+            '.log-method{padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600;min-width:50px;text-align:center}' +
+            '.log-method.POST{background:#e6f4ff;color:#1677ff}' +
+            '.log-method.GET{background:#f6ffed;color:#52c41a}' +
+            '.log-method.PUT{background:#fff7e6;color:#d46b08}' +
+            '.log-method.DELETE{background:#fff2f0;color:#ff4d4f}' +
+            '.log-url{color:rgba(0,0,0,.88);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+            '.log-result{min-width:80px;text-align:right}' +
+            '.log-result.success{color:#52c41a}' +
+            '.log-result.error{color:#ff4d4f}' +
+            '.log-result.timeout{color:#faad14}' +
+            '.log-empty{text-align:center;padding:24px;color:rgba(0,0,0,.25)}' +
+
+            // 加载状态
+            '.ad-loading{display:inline-block;width:16px;height:16px;border:2px solid #f0f0f0;border-top-color:var(--ant-primary);border-radius:50%;animation:ad-spin .8s linear infinite}' +
+            '@keyframes ad-spin{to{transform:rotate(360deg)}}' +
+
+            // 消息提示
+            '.ad-message{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:6px;font-size:14px;display:flex;align-items:center;gap:8px;z-index:2000;box-shadow:0 6px 16px rgba(0,0,0,.08);animation:ad-message-in .3s ease}' +
+            '@keyframes ad-message-in{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}' +
+            '.ad-message-success{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}' +
+            '.ad-message-error{background:#fff2f0;border-color:#ffccc7;color:#ff4d4f}' +
+            '.ad-message-warning{background:#fffbe6;border:1px solid #ffe58f;color:#faad14}' +
+            '.ad-message-icon{font-size:16px;line-height:1}' +
+
+            // 提示框
+            '.ad-hint{padding:8px 12px;background:#fff7e6;border:1px solid #ffe58f;border-radius:4px;font-size:12px;color:#d48808;margin-top:8px}' +
+
+            // 响应式
+            '@media (max-width: 900px){' +
+            '.ad-main-layout{flex-direction:column}' +
+            '.ad-sidebar{width:100%}' +
+            '}' +
+            '</style>';
+    }
+
+    // ==================== 渲染接口列表 ====================
+    function renderApiList() {
+        var html = '<div class="ad-card">' +
+            '<div class="ad-card-header">' +
+            '<span class="ad-card-title">接口列表</span>' +
+            '</div>' +
+            '<div class="ad-card-body" style="padding:12px">';
+
+        var groups = Object.keys(API_CONFIG);
+        groups.forEach(function(groupKey) {
+            var group = API_CONFIG[groupKey];
+            html += '<div class="api-group" data-group="' + groupKey + '">' +
+                '<div class="api-group-header" onclick="toggleGroup(\'' + groupKey + '\')">' +
+                '<span>▸ ' + group.label + '</span>' +
+                '<span class="arrow">▼</span>' +
+                '</div>' +
+                '<div class="api-group-content">';
+
+            group.apis.forEach(function(api, index) {
+                var apiId = groupKey + '_' + index;
+                html += '<div class="api-item" data-api-id="' + apiId + '" onclick="selectApi(\'' + groupKey + '\', ' + index + ')">' +
+                    api.name +
+                    '</div>';
+            });
+
+            html += '</div></div>';
+        });
+
+        html += '</div></div>';
+        return html;
+    }
+
+    // ==================== 渲染请求配置 ====================
+    function renderRequestConfig() {
+        return '<div class="ad-card">' +
+            '<div class="ad-card-header">' +
+            '<span class="ad-card-title">请求配置</span>' +
+            '</div>' +
+            '<div class="ad-card-body">' +
+
+            // 代理模式说明
+            '<div class="ad-hint" style="margin-bottom:16px">' +
+            '<strong>代理模式说明：</strong>所有请求通过帆软 api_agent.cpt 代理模板转发，' +
+            '支持统一认证、日志审计。当前版本仅支持POST方法，请求头需在JSON数据连接中预配置。' +
+            '</div>' +
+
+            // URL
+            '<div class="ad-form-item">' +
+            '<label class="ad-form-label">URL</label>' +
+            '<input type="text" class="ad-input" id="requestUrl" placeholder="请输入接口URL">' +
+            '</div>' +
+
+            // 请求方法（固定POST，代理模式限制）
+            '<div class="ad-form-item">' +
+            '<label class="ad-form-label">请求方法</label>' +
+            '<select class="ad-select" id="requestMethod" disabled>' +
+            '<option value="POST" selected>POST（代理模式固定）</option>' +
+            '</select>' +
+            '</div>' +
+
+            // 超时设置
+            '<div class="ad-form-item">' +
+            '<label class="ad-form-label">超时时间(ms)</label>' +
+            '<input type="number" class="ad-input" id="requestTimeout" value="30000" min="1000" max="120000">' +
+            '</div>' +
+
+            // 请求头（禁用，提示在数据连接配置）
+            '<div class="ad-form-item">' +
+            '<label class="ad-form-label">请求头 <span class="note">(代理模式暂不支持动态配置)</span></label>' +
+            '<textarea class="ad-textarea" id="requestHeaders" rows="3" placeholder="请在api_agent JSON数据连接中预配置" disabled style="background:#f5f5f5"></textarea>' +
+            '</div>' +
+
+            // 请求体
+            '<div class="ad-form-item">' +
+            '<label class="ad-form-label">请求体 (JSON格式)</label>' +
+            '<textarea class="ad-textarea" id="requestBody" rows="6" placeholder="{}"></textarea>' +
+            '</div>' +
+
+            // 提示信息
+            '<div id="apiNote" style="display:none;margin-bottom:16px;padding:8px 12px;background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;font-size:13px;color:#d48808"></div>' +
+
+            // 发送按钮
+            '<button class="ad-btn ad-btn-primary" id="btnSend" style="width:100%">' +
+            '<span id="btnSendText">发送请求</span>' +
+            '<span id="btnSendLoading" style="display:none"><span class="ad-loading"></span></span>' +
+            '</button>' +
+
+            '</div></div>';
+    }
+
+    // ==================== 渲染响应结果 ====================
+    function renderResponse() {
+        return '<div class="ad-card">' +
+            '<div class="response-header">' +
+            '<span class="response-status" id="responseStatus">等待请求</span>' +
+            '<span class="response-duration" id="responseDuration"></span>' +
+            '<span class="response-time" id="responseTime"></span>' +
+            '</div>' +
+            '<div class="response-body" id="responseBody">' +
+            '<div class="response-empty">选择接口并点击"发送请求"查看响应结果</div>' +
+            '</div>' +
+            '</div>';
+    }
+
+    // ==================== 渲染请求日志 ====================
+    function renderLogs() {
+        return '<div class="ad-card">' +
+            '<div class="ad-card-header">' +
+            '<span class="ad-card-title">请求日志（最近10条）</span>' +
+            '</div>' +
+            '<div class="log-list" id="logList">' +
+            '<div class="log-empty">暂无请求记录</div>' +
+            '</div>' +
+            '</div>';
+    }
+
+    // ==================== 消息提示 ====================
+    function showMessage(text, type) {
+        type = type || 'success';
+        var icons = {
+            success: '✓',
+            error: '✕',
+            warning: '!'
+        };
+        var msgEl = document.createElement('div');
+        msgEl.className = 'ad-message ad-message-' + type;
+        msgEl.innerHTML = '<span class="ad-message-icon">' + icons[type] + '</span><span>' + escapeHtml(text) + '</span>';
+        document.body.appendChild(msgEl);
+
+        setTimeout(function() {
+            msgEl.style.opacity = '0';
+            msgEl.style.transition = 'opacity .3s';
+            setTimeout(function() {
+                if (msgEl.parentNode) {
+                    msgEl.parentNode.removeChild(msgEl);
+                }
+            }, 300);
+        }, 2500);
+    }
+
+    // ==================== 接口分组展开/收起 ====================
+    window.toggleGroup = function(groupKey) {
+        var groupEl = document.querySelector('.api-group[data-group="' + groupKey + '"]');
+        if (groupEl) {
+            groupEl.classList.toggle('collapsed');
+        }
+    };
+
+    // ==================== 选择API ====================
+    window.selectApi = function(groupKey, index) {
+        var api = API_CONFIG[groupKey].apis[index];
+        if (!api) return;
+
+        // 更新选中状态
+        document.querySelectorAll('.api-item').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        var currentEl = document.querySelector('.api-item[data-api-id="' + groupKey + '_' + index + '"]');
+        if (currentEl) {
+            currentEl.classList.add('active');
+        }
+
+        // 填充表单
+        document.getElementById('requestUrl').value = api.url;
+        // 请求方法固定为POST，不更新
+        document.getElementById('requestTimeout').value = api.timeout || 30000;
+        // headers不再动态设置
+        document.getElementById('requestBody').value = api.body ? formatJson(api.body) : '';
+
+        // 显示提示
+        var noteEl = document.getElementById('apiNote');
+        if (api.note) {
+            noteEl.textContent = '💡 ' + api.note;
+            noteEl.style.display = 'block';
+        } else {
+            noteEl.style.display = 'none';
+        }
+
+        state.currentApi = api;
+    };
+
+    // ==================== 发送请求 ====================
+    async function sendRequest() {
+        var url = document.getElementById('requestUrl').value.trim();
+        var timeout = parseInt(document.getElementById('requestTimeout').value) || 30000;
+        var headersStr = document.getElementById('requestHeaders').value.trim();
+        var bodyStr = document.getElementById('requestBody').value.trim();
+
+        if (!url) {
+            showMessage('请输入接口URL', 'warning');
+            return;
+        }
+
+        // 注意：通过帆软代理时，自定义headers需要在JSON数据连接层面配置
+        // 当前版本暂不支持动态传递headers
+        if (headersStr) {
+            showMessage('注意：当前代理模式暂不支持自定义headers，请在api_agent JSON数据连接中配置', 'warning');
+        }
+
+        // 解析请求体
+        var body = null;
+        if (bodyStr) {
+            try {
+                body = JSON.parse(bodyStr);
+            } catch(e) {
+                showMessage('请求体JSON格式错误', 'error');
+                return;
+            }
+        }
+
+        // 禁用按钮，显示加载
+        var btnSend = document.getElementById('btnSend');
+        var btnSendText = document.getElementById('btnSendText');
+        var btnSendLoading = document.getElementById('btnSendLoading');
+        btnSend.disabled = true;
+        btnSendText.textContent = '请求中...';
+        btnSendLoading.style.display = 'inline-block';
+
+        // 通过帆软代理调用外部API
+        var result = await callExternalApi(url, body, { timeout: timeout });
+
+        // 恢复按钮
+        btnSend.disabled = false;
+        btnSendText.textContent = '发送请求';
+        btnSendLoading.style.display = 'none';
+
+        // 更新UI
+        updateResponse(result);
+        addLog('POST', url, result);
+
+        // 显示提示
+        if (result.success) {
+            showMessage('请求成功 (' + result.duration + 'ms)', 'success');
+        } else {
+            // 会话过期特殊处理
+            if (result.needLogin) {
+                if (confirm('会话已过期，是否重新登录？')) {
+                    window.location.href = PATH.apiBase + '/login';
+                }
+            } else {
+                showMessage(result.error || '请求失败', 'error');
+            }
+        }
+    }
+
+    // ==================== 更新响应显示 ====================
+    function updateResponse(result) {
+        var statusEl = document.getElementById('responseStatus');
+        var durationEl = document.getElementById('responseDuration');
+        var timeEl = document.getElementById('responseTime');
+        var bodyEl = document.getElementById('responseBody');
+
+        // 状态
+        if (result.success) {
+            statusEl.textContent = (result.httpStatus || 200) + ' OK';
+            statusEl.className = 'response-status success';
+        } else if (result.code === 'TIMEOUT') {
+            statusEl.textContent = 'TIMEOUT';
+            statusEl.className = 'response-status timeout';
+        } else {
+            statusEl.textContent = (result.httpStatus || result.code || 'ERROR') + ' ' + (result.error || '');
+            statusEl.className = 'response-status error';
+        }
+
+        // 耗时
+        durationEl.textContent = '耗时: ' + result.duration + 'ms';
+
+        // 时间
+        timeEl.textContent = getCurrentTime();
+
+        // 响应体
+        var html = '';
+
+        // 显示错误层级
+        if (!result.success && result.layer) {
+            var layerNames = {
+                'config': '配置错误',
+                'http': 'HTTP错误',
+                'business': '业务错误',
+                'network': '网络错误',
+                'proxy': '代理错误'
+            };
+            html += '<div style="margin-bottom:12px">' +
+                '<span class="response-layer ' + result.layer + '">' + layerNames[result.layer] + '</span> ' +
+                '<span style="color:rgba(0,0,0,.65)">' + escapeHtml(result.error) + '</span>' +
+                '</div>';
+            // 显示提示
+            if (result.hint) {
+                html += '<div class="ad-hint">' + result.hint + '</div>';
+            }
+        }
+
+        if (result.format === 'text') {
+            html += '<pre>' + escapeHtml(result.data) + '</pre>';
+        } else if (result.data !== undefined) {
+            html += '<pre>' + escapeHtml(formatJson(result.data)) + '</pre>';
+        } else if (result.raw) {
+            html += '<pre>' + escapeHtml(formatJson(result.raw)) + '</pre>';
+        }
+
+        bodyEl.innerHTML = html || '<div class="response-empty">无响应数据</div>';
+    }
+
+    // ==================== 添加日志 ====================
+    function addLog(method, url, result) {
+        var log = {
+            time: getCurrentTime(),
+            method: method,
+            url: getUrlPath(url),
+            fullUrl: url,
+            success: result.success,
+            duration: result.duration,
+            error: result.error
+        };
+
+        state.logs.unshift(log);
+        if (state.logs.length > 10) {
+            state.logs.pop();
+        }
+
+        refreshLogs();
+    }
+
+    // ==================== 刷新日志列表 ====================
+    function refreshLogs() {
+        var logListEl = document.getElementById('logList');
+        if (state.logs.length === 0) {
+            logListEl.innerHTML = '<div class="log-empty">暂无请求记录</div>';
+            return;
+        }
+
+        var html = '';
+        state.logs.forEach(function(log) {
+            var resultClass = log.success ? 'success' : (log.error === '请求超时' ? 'timeout' : 'error');
+            var resultText = log.success ? '200 OK' : (log.error || 'ERROR');
+            html += '<div class="log-item">' +
+                '<span class="log-time">' + log.time + '</span>' +
+                '<span class="log-method ' + log.method + '">' + log.method + '</span>' +
+                '<span class="log-url" title="' + escapeHtml(log.fullUrl) + '">' + escapeHtml(log.url) + '</span>' +
+                '<span class="log-result ' + resultClass + '">' + resultText + ' (' + log.duration + 'ms)</span>' +
+                '</div>';
+        });
+
+        logListEl.innerHTML = html;
+    }
+
+    // ==================== 清空日志 ====================
+    function clearLogs() {
+        state.logs = [];
+        refreshLogs();
+        showMessage('日志已清空', 'success');
+    }
+
+    // ==================== 初始化 ====================
+    function init() {
+        document.body.innerHTML = '<div style="padding:48px;text-align:center;"><span style="display:inline-block;width:24px;height:24px;border:3px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:ad-spin .8s linear infinite;"></span> 页面加载中...</div>';
+
+        var html = renderStyles() +
+            '<div class="ad-container">' +
+
+            // 页面标题
+            '<div class="ad-page-header">' +
+            '<h1 class="ad-page-title">API调度中心</h1>' +
+            '<button class="ad-btn ad-btn-default" id="btnClearLogs">清空日志</button>' +
+            '</div>' +
+
+            // 架构说明
+            '<div class="ad-arch">' +
+            '<div class="ad-arch-title">调用链路（帆软代理模式）</div>' +
+            '<div class="ad-arch-flow">' +
+            '<span class="ad-arch-node">前端</span>' +
+            '<span class="ad-arch-arrow">→</span>' +
+            '<span class="ad-arch-node">/api/report</span>' +
+            '<span class="ad-arch-arrow">→</span>' +
+            '<span class="ad-arch-node">api_agent.cpt</span>' +
+            '<span class="ad-arch-arrow">→</span>' +
+            '<span class="ad-arch-node" style="background:#f6ffed;border-color:#b7eb8f">外部API</span>' +
+            '</div>' +
+            '<div style="margin-top:8px;font-size:12px;color:rgba(0,0,0,.45)">所有外部API调用均通过帆软代理模板，统一认证、日志、安全控制</div>' +
+            '</div>' +
+
+            // 主布局
+            '<div class="ad-main-layout">' +
+
+            // 左侧：接口列表
+            '<div class="ad-sidebar">' +
+            renderApiList() +
+            '</div>' +
+
+            // 右侧：请求配置 + 响应
+            '<div class="ad-main-content">' +
+            renderRequestConfig() +
+            renderResponse() +
+            renderLogs() +
+            '</div>' +
+
+            '</div>' +
+
+            '<div style="text-align:center;color:rgba(0,0,0,.45);font-size:12px;margin-top:24px">江城智造局 · API调度中心 v3.0（帆软代理模式）</div>' +
+            '</div>';
+
+        document.body.innerHTML = html;
+
+        // 绑定事件
+        document.getElementById('btnSend').onclick = sendRequest;
+        document.getElementById('btnClearLogs').onclick = clearLogs;
+
+        // 默认展开第一个分组并选中第一个API
+        toggleGroup('standard');
+        selectApi('standard', 0);
+    }
+
+    init();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<ToolBars/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[加载中...]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand/>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttrMark">
+<TemplateIdAttMark TemplateId="jiangcheng_api_scheduler_v3"/>
+</TemplateIdAttMark>
+</WorkBook>

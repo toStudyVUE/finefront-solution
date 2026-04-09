@@ -1,0 +1,480 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * 设备选择器 - Ant Design 5.0 风格
+ * 功能：搜索可借用设备，点击选中回填父页面
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        // 当前模板目录
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+
+        // API基础路径：从servletURL截取前两级
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })(),
+
+        // 数据层模板路径（展示层在pages/，数据层在data/）
+        getDataTemplate: function(filename) {
+            return this.currentDir.replace('/pages/', '/data/') + filename;
+        }
+    };
+
+    // ==================== 配置 ====================
+    var CONFIG = {
+        dataTemplate: PATH.getDataTemplate('borrow_data.cpt'),
+        datasourceName: 'equipment_available'
+    };
+
+    // ==================== 状态管理 ====================
+    var state = {
+        data: [],
+        loading: false,
+        keyword: '',
+        selectedId: null,
+        selectedRow: null
+    };
+
+    // ==================== 工具函数 ====================
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"']/g, function(s) {
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return map[s];
+        });
+    }
+
+    // ==================== API 请求 ====================
+    function fetchData(keyword, callback) {
+        if (state.loading) return;
+        state.loading = true;
+        showLoading(true);
+
+        var params = [];
+        if (keyword) {
+            params.push({ name: 'p_keyword', type: 'String', value: keyword });
+        }
+
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: CONFIG.dataTemplate,
+                datasource_name: CONFIG.datasourceName,
+                page_number: -1,
+                page_size: -1,
+                parameters: params
+            }),
+            success: function(resStr) {
+                try {
+                    var res = typeof resStr === 'string' ? JSON.parse(resStr) : resStr;
+                    state.loading = false;
+                    state.data = res.data || [];
+                    showLoading(false);
+                    callback(state.data);
+                } catch(e) {
+                    state.loading = false;
+                    showLoading(false);
+                    console.error('Parse error:', e);
+                    callback([]);
+                }
+            },
+            error: function(xhr) {
+                state.loading = false;
+                showLoading(false);
+                console.error('API Error:', xhr.responseText);
+                callback([]);
+            }
+        });
+    }
+
+    function showLoading(show) {
+        var loadingEl = document.getElementById('loadingOverlay');
+        if (loadingEl) {
+            loadingEl.style.display = show ? 'flex' : 'none';
+        }
+    }
+
+    // ==================== 渲染函数 ====================
+    function renderStyles() {
+        return '<style>' +
+            '*{box-sizing:border-box;margin:0;padding:0}' +
+            'html,body{height:auto;min-height:100%;overflow:visible}' +
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:#fff;color:rgba(0,0,0,.88);line-height:1.5714285714285714}' +
+            ':root{--ant-primary:#1677ff;--ant-primary-hover:#4096ff;--ant-primary-active:#0958d9;--ant-border-radius:6px;--ant-shadow:0 1px 2px 0 rgba(0,0,0,.03),0 1px 6px -1px rgba(0,0,0,.02),0 2px 4px 0 rgba(0,0,0,.02)}' +
+            '.ad-selector-container{padding:16px}' +
+            '.ad-search-bar{display:flex;gap:12px;margin-bottom:16px}' +
+            '.ad-input{flex:1;height:32px;padding:4px 11px;font-size:14px;border:1px solid #d9d9d9;border-radius:var(--ant-border-radius);outline:none}' +
+            '.ad-input:hover{border-color:var(--ant-primary)}' +
+            '.ad-input:focus{border-color:var(--ant-primary);box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-btn{height:32px;padding:4px 15px;font-size:14px;border-radius:var(--ant-border-radius);border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:64px}' +
+            '.ad-btn-primary{background:var(--ant-primary);color:#fff;border-color:var(--ant-primary)}' +
+            '.ad-btn-primary:hover{background:var(--ant-primary-hover)}' +
+            '.ad-btn-default{background:#fff;color:rgba(0,0,0,.88);border-color:#d9d9d9}' +
+            '.ad-btn-default:hover{color:var(--ant-primary);border-color:var(--ant-primary)}' +
+            '.ad-table-wrapper{border-radius:var(--ant-border-radius);border:1px solid #f0f0f0;margin-bottom:16px;max-height:400px;overflow-y:auto}' +
+'.ad-table thead{position:sticky;top:0;z-index:1}' +
+            '.ad-table{width:100%;border-collapse:collapse;font-size:14px}' +
+            '.ad-table th{background:#fafafa;padding:12px 16px;text-align:left;font-weight:600;color:rgba(0,0,0,.88);border-bottom:1px solid #f0f0f0;white-space:nowrap}' +
+            '.ad-table td{padding:12px 16px;border-bottom:1px solid #f0f0f0;color:rgba(0,0,0,.88)}' +
+            '.ad-table tbody tr{cursor:pointer;transition:background .2s}' +
+            '.ad-table tbody tr:hover{background:#e6f4ff}' +
+            '.ad-table tbody tr.selected{background:#bae0ff}' +
+            '.ad-table tbody tr:last-child td{border-bottom:none}' +
+            '.ad-tag{display:inline-block;height:22px;line-height:20px;padding:0 8px;font-size:12px;border-radius:4px;border:1px solid transparent}' +
+            '.ad-tag-blue{background:#e6f4ff;border-color:#91caff;color:#1677ff}' +
+            '.ad-tag-green{background:#f6ffed;border-color:#b7eb8f;color:#389e0d}' +
+            '.ad-tag-orange{background:#fff7e6;border-color:#ffd591;color:#d46b08}' +
+            '.ad-tag-default{background:#fafafa;border-color:#d9d9d9;color:rgba(0,0,0,.45)}' +
+            '.ad-empty{padding:48px;text-align:center;color:rgba(0,0,0,.25)}' +
+            '.ad-empty-icon{font-size:48px;margin-bottom:12px}' +
+            '.ad-empty-text{font-size:14px}' +
+            '.ad-footer{display:flex;justify-content:space-between;align-items:center;padding-top:16px;border-top:1px solid #f0f0f0}' +
+            '.ad-tip{font-size:12px;color:rgba(0,0,0,.45)}' +
+            '.ad-footer-btns{display:flex;gap:12px}' +
+            '.ad-loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.7);display:none;align-items:center;justify-content:center;z-index:100}' +
+            '.ad-loading{display:inline-block;width:20px;height:20px;border:2px solid #f0f0f0;border-top-color:var(--ant-primary);border-radius:50%;animation:ad-spin .8s linear infinite}' +
+            '@keyframes ad-spin{to{transform:rotate(360deg)}}' +
+            '</style>';
+    }
+
+    function getTypeTag(type) {
+        var tagClass = {
+            '笔记本': 'ad-tag-blue',
+            '台式机': 'ad-tag-green',
+            '投影仪': 'ad-tag-orange'
+        };
+        return '<span class="ad-tag ' + (tagClass[type] || 'ad-tag-default') + '">' + escapeHtml(type || '-') + '</span>';
+    }
+
+    function renderSearchBar() {
+        return '<div class="ad-search-bar">' +
+            '<input type="text" class="ad-input" id="searchInput" placeholder="输入资产编号或设备名称搜索..." value="' + escapeHtml(state.keyword) + '">' +
+            '<button class="ad-btn ad-btn-primary" id="btnSearch">搜索</button>' +
+            '<button class="ad-btn ad-btn-default" id="btnReset">重置</button>' +
+            '</div>';
+    }
+
+    function renderTableHeader() {
+        return '<thead><tr>' +
+            '<th style="width:60px">序号</th>' +
+            '<th>资产编号</th>' +
+            '<th>设备名称</th>' +
+            '<th style="width:100px">类型</th>' +
+            '<th>存放位置</th>' +
+            '</tr></thead>';
+    }
+
+    function renderTableBody(data) {
+        if (!data || data.length === 0) {
+            return '<tbody><tr><td colspan="5">' +
+                '<div class="ad-empty">' +
+                '<div class="ad-empty-icon">📭</div>' +
+                '<div class="ad-empty-text">暂无可借用设备</div>' +
+                '</div></td></tr></tbody>';
+        }
+
+        var html = '<tbody>';
+        data.forEach(function(row, index) {
+            var selectedClass = state.selectedId === row.id ? 'selected' : '';
+            html += '<tr class="' + selectedClass + '" data-id="' + escapeHtml(row.id) + '" data-row=\'' + JSON.stringify(row).replace(/'/g, "\\'") + '\'>' +
+                '<td>' + (index + 1) + '</td>' +
+                '<td>' + escapeHtml(row.asset_no) + '</td>' +
+                '<td>' + escapeHtml(row.name) + '</td>' +
+                '<td>' + getTypeTag(row.type) + '</td>' +
+                '<td>' + escapeHtml(row.location || '-') + '</td>' +
+                '</tr>';
+        });
+        html += '</tbody>';
+        return html;
+    }
+
+    function renderFooter() {
+        return '<div class="ad-footer">' +
+            '<div class="ad-tip">点击行选中设备，双击确认选择</div>' +
+            '<div class="ad-footer-btns">' +
+            '<button class="ad-btn ad-btn-default" id="btnCancel">取消</button>' +
+            '<button class="ad-btn ad-btn-primary" id="btnConfirm" disabled>确定</button>' +
+            '</div></div>';
+    }
+
+    function renderLoadingOverlay() {
+        return '<div class="ad-loading-overlay" id="loadingOverlay">' +
+            '<span class="ad-loading"></span>' +
+            '</div>';
+    }
+
+    function render(data) {
+        var html = renderStyles() +
+            '<div class="ad-selector-container">' +
+            renderSearchBar() +
+            '<div class="ad-table-wrapper">' +
+            '<table class="ad-table" id="dataTable">' +
+            renderTableHeader() +
+            renderTableBody(data) +
+            '</table>' +
+            '</div>' +
+            renderFooter() +
+            '</div>' +
+            renderLoadingOverlay();
+
+        document.body.innerHTML = html;
+    }
+
+    // ==================== 事件绑定 ====================
+    function bindEvents() {
+        // 搜索按钮
+        var btnSearch = document.getElementById('btnSearch');
+        if (btnSearch) {
+            btnSearch.onclick = doSearch;
+        }
+
+        // 回车搜索
+        var searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            searchInput.onkeypress = function(e) {
+                if (e.key === 'Enter') doSearch();
+            };
+        }
+
+        // 重置按钮
+        var btnReset = document.getElementById('btnReset');
+        if (btnReset) {
+            btnReset.onclick = doReset;
+        }
+
+        // 取消按钮
+        var btnCancel = document.getElementById('btnCancel');
+        if (btnCancel) {
+            btnCancel.onclick = doCancel;
+        }
+
+        // 确定按钮
+        var btnConfirm = document.getElementById('btnConfirm');
+        if (btnConfirm) {
+            btnConfirm.onclick = doConfirm;
+        }
+
+        // 表格行点击
+        bindRowEvents();
+    }
+
+    function bindRowEvents() {
+        var table = document.getElementById('dataTable');
+        if (!table) return;
+
+        var rows = table.querySelectorAll('tbody tr[data-id]');
+        for (var i = 0; i < rows.length; i++) {
+            // 单击选中
+            rows[i].onclick = function() {
+                selectRow(this);
+            };
+
+            // 双击确认
+            rows[i].ondblclick = function() {
+                selectRow(this);
+                doConfirm();
+            };
+        }
+    }
+
+    function selectRow(rowEl) {
+        // 清除之前的选中
+        var prevSelected = document.querySelector('.ad-table tbody tr.selected');
+        if (prevSelected) {
+            prevSelected.classList.remove('selected');
+        }
+
+        // 设置新的选中
+        rowEl.classList.add('selected');
+        state.selectedId = rowEl.getAttribute('data-id');
+
+        try {
+            state.selectedRow = JSON.parse(rowEl.getAttribute('data-row'));
+        } catch(e) {
+            state.selectedRow = null;
+        }
+
+        // 启用确定按钮
+        var btnConfirm = document.getElementById('btnConfirm');
+        if (btnConfirm) {
+            btnConfirm.disabled = false;
+        }
+    }
+
+    // ==================== 操作函数 ====================
+    function doSearch() {
+        state.keyword = document.getElementById('searchInput').value.trim();
+        fetchData(state.keyword, function(data) {
+            state.selectedId = null;
+            state.selectedRow = null;
+            refreshTable(data);
+
+            // 禁用确定按钮
+            var btnConfirm = document.getElementById('btnConfirm');
+            if (btnConfirm) {
+                btnConfirm.disabled = true;
+            }
+        });
+    }
+
+    function doReset() {
+        state.keyword = '';
+        state.selectedId = null;
+        state.selectedRow = null;
+        document.getElementById('searchInput').value = '';
+
+        fetchData('', function(data) {
+            refreshTable(data);
+
+            // 禁用确定按钮
+            var btnConfirm = document.getElementById('btnConfirm');
+            if (btnConfirm) {
+                btnConfirm.disabled = true;
+            }
+        });
+    }
+
+    function doCancel() {
+        if (window.parent && window.parent.closeSelectorModal) {
+            window.parent.closeSelectorModal();
+        }
+    }
+
+    function doConfirm() {
+        if (!state.selectedRow) return;
+
+        if (window.parent && window.parent.onEquipmentSelected) {
+            window.parent.onEquipmentSelected({
+                id: state.selectedRow.id,
+                asset_no: state.selectedRow.asset_no,
+                name: state.selectedRow.name,
+                type: state.selectedRow.type,
+                location: state.selectedRow.location
+            });
+        }
+
+        if (window.parent && window.parent.closeSelectorModal) {
+            window.parent.closeSelectorModal();
+        }
+    }
+
+    function refreshTable(data) {
+        var table = document.getElementById('dataTable');
+        if (table) {
+            table.innerHTML = renderTableHeader() + renderTableBody(data);
+            bindRowEvents();
+        }
+    }
+
+    // ==================== 初始化 ====================
+    function init() {
+        document.body.innerHTML = '<div style="padding:48px;text-align:center;"><span style="display:inline-block;width:24px;height:24px;border:3px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:ad-spin .8s linear infinite;"></span> 加载中...</div>';
+
+        fetchData('', function(data) {
+            render(data);
+            bindEvents();
+        });
+    }
+
+    init();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<ToolBars/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[加载中...]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand/>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttMark">
+<TemplateIdAttMark TemplateId="jiangcheng_equipment_selector_v1"/>
+</TemplateIdAttMark>
+</WorkBook>

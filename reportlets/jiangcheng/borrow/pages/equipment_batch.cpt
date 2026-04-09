@@ -1,0 +1,879 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * 设备资产批量导入页面
+ * 功能：上传Excel -> 解析预览 -> 分批写入临时表 -> 校验 -> 确认/放弃导入
+ * 使用 /api/data 接口调用 borrow_data.cpt
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        // 当前模板目录
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+
+        // API基础路径：从servletURL截取前两级
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })(),
+
+        // 数据层模板路径（展示层在pages/，数据层在data/）
+        getDataTemplate: function(filename) {
+            return this.currentDir.replace('/pages/', '/data/') + filename;
+        }
+    };
+
+    // ==================== 配置 ====================
+    var CONFIG = {
+        dataTemplate: PATH.getDataTemplate('borrow_data.cpt'),
+        batchSize: 50,  // 每批写入行数
+        // 字段映射（Excel列名 -> 临时表字段）
+        fieldMapping: {
+            '资产编号': 'str_01',
+            '设备名称': 'str_02',
+            '设备类型': 'str_03',
+            '品牌': 'str_04',
+            '型号': 'str_05',
+            'SN码': 'str_06',
+            '存放位置': 'str_07',
+            '使用部门': 'str_08',
+            '使用人': 'str_09',
+            '资产状态': 'str_10',
+            '数量': 'num_01',
+            '单价': 'num_02',
+            '总价': 'num_03',
+            '使用年限': 'num_04',
+            '折旧值': 'num_05',
+            '资产来源': 'txt_01',
+            '供应商': 'txt_02',
+            '购置日期': 'txt_03',
+            '备注': 'txt_04'
+        },
+        // 预览表显示列
+        previewColumns: ['资产编号', '设备名称', '数量', '使用部门', '资产状态']
+    };
+
+    // ==================== 状态管理 ====================
+    var state = {
+        step: 0,  // 0:选择文件 1:预览 2:写入中 3:校验结果
+        importId: '',
+        data: [],
+        errors: [],
+        stats: { total: 0, valid_count: 0, error_count: 0 }
+    };
+
+    // ==================== 工具函数 ====================
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"']/g, function(s) {
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return map[s];
+        });
+    }
+
+    function generateUUID() {
+        return 'IMP' + Date.now() + Math.random().toString(36).substr(2, 9);
+    }
+
+    // ==================== API 请求 ====================
+    function callAPI(datasourceName, params, callback) {
+        var request = {
+            report_path: CONFIG.dataTemplate,
+            datasource_name: datasourceName,
+            page_number: -1,
+            page_size: -1,
+            parameters: params
+        };
+
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(request),
+            success: function(resStr) {
+                try {
+                    var res = typeof resStr === 'string' ? JSON.parse(resStr) : resStr;
+                    callback(null, res);
+                } catch(e) {
+                    callback(e, null);
+                }
+            },
+            error: function(xhr) {
+                callback(new Error(xhr.responseText || '请求失败'), null);
+            }
+        });
+    }
+
+    // 分批写入临时表
+    function writeToTemp(importId, rows, startRow, callback) {
+        var params = [
+            { name: 'p_import_id', type: 'String', value: importId },
+            { name: 'p_data_json', type: 'String', value: JSON.stringify(rows) },
+            { name: 'p_start_row', type: 'Integer', value: startRow }
+        ];
+        callAPI('batch_insert', params, callback);
+    }
+
+    // 校验
+    function validateImport(importId, callback) {
+        var params = [
+            { name: 'p_import_id', type: 'String', value: importId }
+        ];
+        callAPI('validate', params, callback);
+    }
+
+    // 获取统计
+    function fetchStats(importId, callback) {
+        var params = [
+            { name: 'p_import_id', type: 'String', value: importId }
+        ];
+        callAPI('stats', params, callback);
+    }
+
+    // 获取错误
+    function fetchErrors(importId, callback) {
+        var params = [
+            { name: 'p_import_id', type: 'String', value: importId }
+        ];
+        callAPI('errors', params, callback);
+    }
+
+    // 提交
+    function commitImport(importId, mode, callback) {
+        var params = [
+            { name: 'p_import_id', type: 'String', value: importId },
+            { name: 'p_mode', type: 'String', value: mode }
+        ];
+        callAPI('commit', params, callback);
+    }
+
+    // ==================== 消息提示 ====================
+    function showMessage(text, type) {
+        type = type || 'success';
+        var icons = {
+            success: '✓',
+            error: '✕',
+            warning: '!'
+        };
+        var msgEl = document.createElement('div');
+        msgEl.className = 'batch-msg batch-msg-' + type;
+        msgEl.innerHTML = '<span class="batch-msg-icon">' + icons[type] + '</span><span>' + escapeHtml(text) + '</span>';
+        document.body.appendChild(msgEl);
+
+        setTimeout(function() {
+            msgEl.style.opacity = '0';
+            msgEl.style.transition = 'opacity .3s';
+            setTimeout(function() {
+                if (msgEl.parentNode) {
+                    msgEl.parentNode.removeChild(msgEl);
+                }
+            }, 300);
+        }, 3000);
+    }
+
+    // ==================== 渲染样式 ====================
+    function renderStyles() {
+        return '<style>' +
+            '*{box-sizing:border-box;margin:0;padding:0}' +
+            'html,body{height:auto!important;min-height:100%;overflow-y:auto!important;overflow-x:hidden}' +
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88);line-height:1.5714285714285714;padding:24px}' +
+            ':root{--ant-primary:#1677ff;--ant-primary-hover:#4096ff;--ant-border-radius:6px;--ant-shadow:0 1px 2px 0 rgba(0,0,0,.03),0 1px 6px -1px rgba(0,0,0,.02),0 2px 4px 0 rgba(0,0,0,.02)}' +
+            '.batch-container{max-width:1000px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:var(--ant-shadow);overflow:hidden}' +
+            '.batch-header{padding:20px 24px;border-bottom:1px solid #f0f0f0;background:#fafafa}' +
+            '.batch-title{font-size:18px;font-weight:600;color:rgba(0,0,0,.88)}' +
+            '.batch-body{padding:24px;min-height:400px}' +
+            '.batch-footer{padding:16px 24px;border-top:1px solid #f0f0f0;display:flex;gap:12px;justify-content:flex-end;background:#fafafa}' +
+            // 步骤指示器
+            '.batch-steps{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:32px}' +
+            '.batch-step{display:flex;align-items:center;gap:8px}' +
+            '.batch-step-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600}' +
+            '.batch-step-num.active{background:var(--ant-primary);color:#fff}' +
+            '.batch-step-num.done{background:#52c41a;color:#fff}' +
+            '.batch-step-num.pending{background:#f0f0f0;color:#999}' +
+            '.batch-step-text{font-size:14px;color:rgba(0,0,0,.45)}' +
+            '.batch-step-text.active{color:rgba(0,0,0,.88);font-weight:500}' +
+            '.batch-step-line{width:40px;height:2px;background:#e8e8e8}' +
+            '.batch-step-line.done{background:#52c41a}' +
+            // 上传区域
+            '.batch-upload-area{border:2px dashed #d9d9d9;border-radius:8px;padding:48px;text-align:center;cursor:pointer;transition:border-color .3s}' +
+            '.batch-upload-area:hover{border-color:var(--ant-primary)}' +
+            '.batch-upload-icon{font-size:48px;color:#1677ff;margin-bottom:16px}' +
+            '.batch-upload-text{font-size:16px;color:rgba(0,0,0,.65)}' +
+            '.batch-upload-hint{font-size:12px;color:#999;margin-top:8px}' +
+            // 文件信息
+            '.batch-file-info{display:flex;align-items:center;gap:12px;padding:16px;background:#f6ffed;border:1px solid #b7eb8f;border-radius:6px;margin-top:16px}' +
+            '.batch-file-icon{font-size:32px}' +
+            '.batch-file-detail{flex:1}' +
+            '.batch-file-name{font-weight:500;color:rgba(0,0,0,.88)}' +
+            '.batch-file-size{font-size:12px;color:#999;margin-top:4px}' +
+            // 预览表格
+            '.batch-preview{margin-top:16px}' +
+            '.batch-preview-info{font-size:14px;color:#666;margin-bottom:12px}' +
+            '.batch-preview-table{max-height:350px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:6px}' +
+            '.batch-table{width:100%;border-collapse:collapse;font-size:13px}' +
+            '.batch-table th{background:#fafafa;padding:10px 12px;text-align:left;font-weight:600;color:rgba(0,0,0,.88);border-bottom:1px solid #f0f0f0;position:sticky;top:0;z-index:1}' +
+            '.batch-table td{padding:10px 12px;border-bottom:1px solid #f0f0f0}' +
+            '.batch-table tbody tr:hover{background:#fafafa}' +
+            // 进度条
+            '.batch-progress{margin:24px 0}' +
+            '.batch-progress-bar{height:8px;background:#f0f0f0;border-radius:4px;overflow:hidden}' +
+            '.batch-progress-fill{height:100%;background:var(--ant-primary);transition:width .3s}' +
+            '.batch-progress-text{text-align:center;margin-top:12px;color:#666;font-size:14px}' +
+            // 统计卡片
+            '.batch-stats{display:flex;gap:24px;justify-content:center;margin:32px 0}' +
+            '.batch-stat-card{flex:1;max-width:200px;text-align:center;padding:24px;background:#fafafa;border-radius:8px}' +
+            '.batch-stat-value{font-size:36px;font-weight:600;line-height:1.2}' +
+            '.batch-stat-label{font-size:14px;color:#999;margin-top:8px}' +
+            '.batch-stat-success .batch-stat-value{color:#52c41a}' +
+            '.batch-stat-error .batch-stat-value{color:#ff4d4f}' +
+            // 错误表格
+            '.batch-error-section{margin-top:24px}' +
+            '.batch-error-title{font-weight:600;margin-bottom:12px;color:rgba(0,0,0,.88)}' +
+            '.batch-error-table{max-height:250px;overflow-y:auto;border:1px solid #ffccc7;border-radius:6px}' +
+            '.batch-error-row{background:#fff2f0}' +
+            '.batch-error-msg{color:#ff4d4f}' +
+            // 按钮
+            '.batch-btn{height:36px;padding:0 20px;font-size:14px;border-radius:6px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:500}' +
+            '.batch-btn-primary{background:var(--ant-primary);color:#fff;border-color:var(--ant-primary)}' +
+            '.batch-btn-primary:hover{background:var(--ant-primary-hover)}' +
+            '.batch-btn-default{background:#fff;color:rgba(0,0,0,.88);border-color:#d9d9d9}' +
+            '.batch-btn-default:hover{color:var(--ant-primary);border-color:var(--ant-primary)}' +
+            '.batch-btn-success{background:#52c41a;color:#fff;border-color:#52c41a}' +
+            '.batch-btn-success:hover{background:#73d13d}' +
+            '.batch-btn-danger{background:#ff4d4f;color:#fff;border-color:#ff4d4f}' +
+            '.batch-btn-danger:hover{background:#ff7875}' +
+            '.batch-btn:disabled{opacity:0.4;cursor:not-allowed}' +
+            // 消息提示
+            '.batch-msg{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:6px;font-size:14px;display:flex;align-items:center;gap:8px;z-index:2000;box-shadow:0 6px 16px rgba(0,0,0,.08);animation:batch-msg-in .3s ease}' +
+            '@keyframes batch-msg-in{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}' +
+            '.batch-msg-success{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}' +
+            '.batch-msg-error{background:#fff2f0;border:1px solid #ffccc7;color:#ff4d4f}' +
+            '.batch-msg-warning{background:#fffbe6;border:1px solid #ffe58f;color:#faad14}' +
+            '.batch-msg-icon{font-size:16px;line-height:1}' +
+            // 提示
+            '.batch-tip{padding:12px 16px;background:#e6f7ff;border:1px solid #91d5ff;border-radius:6px;margin-bottom:16px;font-size:14px;color:#0050b3}' +
+            '</style>';
+    }
+
+    // ==================== 渲染步骤指示器 ====================
+    function renderSteps() {
+        var steps = ['选择文件', '数据预览', '写入校验', '完成'];
+        var html = '<div class="batch-steps">';
+
+        steps.forEach(function(text, idx) {
+            var stepNum = idx + 1;
+            var numClass = 'pending';
+            var textClass = '';
+
+            if (state.step > idx) {
+                numClass = 'done';
+            } else if (state.step === idx) {
+                numClass = 'active';
+                textClass = 'active';
+            }
+
+            html += '<div class="batch-step">' +
+                '<span class="batch-step-num ' + numClass + '">' + stepNum + '</span>' +
+                '<span class="batch-step-text ' + textClass + '">' + text + '</span>' +
+                '</div>';
+
+            if (idx < steps.length - 1) {
+                var lineClass = state.step > idx ? 'done' : '';
+                html += '<div class="batch-step-line ' + lineClass + '"></div>';
+            }
+        });
+
+        html += '</div>';
+        return html;
+    }
+
+    // ==================== 渲染内容区 ====================
+    function renderContent() {
+        var html = renderSteps();
+
+        // 步骤0: 选择文件
+        if (state.step === 0) {
+            html += '<div class="batch-tip">请上传包含设备资产信息的Excel文件，支持 .xlsx 和 .xls 格式</div>' +
+                '<div class="batch-upload-area" id="uploadArea">' +
+                '<input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none">' +
+                '<div class="batch-upload-icon">📄</div>' +
+                '<div class="batch-upload-text">点击选择Excel文件或拖拽到此处</div>' +
+                '<div class="batch-upload-hint">支持 .xlsx, .xls 格式，建议单次导入不超过1000行</div>' +
+                '</div>' +
+                '<div id="fileInfo" style="display:none"></div>';
+        }
+
+        // 步骤1: 预览
+        else if (state.step === 1) {
+            var previewData = state.data.slice(0, 20);
+            html += '<div class="batch-preview">' +
+                '<div class="batch-preview-info">共解析 <strong>' + state.data.length + '</strong> 行数据，以下为前20行预览</div>' +
+                '<div class="batch-preview-table">' +
+                '<table class="batch-table">' +
+                '<thead><tr>' +
+                '<th>行号</th>';
+
+            CONFIG.previewColumns.forEach(function(col) {
+                html += '<th>' + col + '</th>';
+            });
+
+            html += '</tr></thead><tbody>';
+
+            previewData.forEach(function(row, idx) {
+                html += '<tr><td>' + (idx + 1) + '</td>';
+                CONFIG.previewColumns.forEach(function(col) {
+                    html += '<td>' + escapeHtml(row[col] || '') + '</td>';
+                });
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div></div>';
+        }
+
+        // 步骤2: 写入/校验中
+        else if (state.step === 2) {
+            html += '<div class="batch-progress">' +
+                '<div class="batch-progress-bar">' +
+                '<div class="batch-progress-fill" id="progressFill" style="width:0%"></div>' +
+                '</div>' +
+                '<div class="batch-progress-text" id="progressText">正在写入临时表...</div>' +
+                '</div>';
+        }
+
+        // 步骤3: 校验结果
+        else if (state.step === 3) {
+            var stats = state.stats;
+            html += '<div class="batch-stats">' +
+                '<div class="batch-stat-card">' +
+                '<div class="batch-stat-value">' + stats.total + '</div>' +
+                '<div class="batch-stat-label">总记录数</div>' +
+                '</div>' +
+                '<div class="batch-stat-card batch-stat-success">' +
+                '<div class="batch-stat-value">' + stats.valid_count + '</div>' +
+                '<div class="batch-stat-label">校验通过</div>' +
+                '</div>' +
+                '<div class="batch-stat-card batch-stat-error">' +
+                '<div class="batch-stat-value">' + stats.error_count + '</div>' +
+                '<div class="batch-stat-label">校验失败</div>' +
+                '</div>' +
+                '</div>';
+
+            // 错误明细
+            if (state.errors.length > 0) {
+                html += '<div class="batch-error-section">' +
+                    '<div class="batch-error-title">错误明细（最多显示100条）：</div>' +
+                    '<div class="batch-error-table">' +
+                    '<table class="batch-table">' +
+                    '<thead><tr>' +
+                    '<th>行号</th>' +
+                    '<th>资产编号</th>' +
+                    '<th>设备名称</th>' +
+                    '<th>错误信息</th>' +
+                    '</tr></thead>' +
+                    '<tbody>';
+
+                state.errors.forEach(function(err) {
+                    html += '<tr class="batch-error-row">' +
+                        '<td>' + err.row_no + '</td>' +
+                        '<td>' + escapeHtml(err.asset_no || '') + '</td>' +
+                        '<td>' + escapeHtml(err.equipment_name || '') + '</td>' +
+                        '<td class="batch-error-msg">' + escapeHtml(err.error_msg || '') + '</td>' +
+                        '</tr>';
+                });
+
+                html += '</tbody></table></div></div>';
+            }
+        }
+
+        return html;
+    }
+
+    // ==================== 渲染按钮区 ====================
+    function renderFooter() {
+        var html = '';
+
+        if (state.step === 0) {
+            html = '<button class="batch-btn batch-btn-default" id="btnCancel">取消</button>' +
+                '<button class="batch-btn batch-btn-primary" id="btnNext" disabled>下一步</button>';
+        } else if (state.step === 1) {
+            html = '<button class="batch-btn batch-btn-default" id="btnBack">返回</button>' +
+                '<button class="batch-btn batch-btn-primary" id="btnImport">开始导入</button>';
+        } else if (state.step === 2) {
+            html = '<span style="color:#999">正在处理，请稍候...</span>';
+        } else if (state.step === 3) {
+            var stats = state.stats;
+            if (stats.error_count > 0) {
+                html = '<button class="batch-btn batch-btn-danger" id="btnCancelImport">放弃导入</button>' +
+                    '<button class="batch-btn batch-btn-success" id="btnCommitValid">仅导入正确行 (' + stats.valid_count + '条)</button>';
+            } else {
+                html = '<button class="batch-btn batch-btn-default" id="btnCancelImport">取消</button>' +
+                    '<button class="batch-btn batch-btn-success" id="btnCommitAll">确认导入 (' + stats.valid_count + '条)</button>';
+            }
+        }
+
+        return html;
+    }
+
+    // ==================== 渲染页面 ====================
+    function render() {
+        var html = renderStyles() +
+            '<div class="batch-container">' +
+            '<div class="batch-header">' +
+            '<div class="batch-title">设备资产批量导入</div>' +
+            '</div>' +
+            '<div class="batch-body" id="batchBody">' +
+            renderContent() +
+            '</div>' +
+            '<div class="batch-footer" id="batchFooter">' +
+            renderFooter() +
+            '</div>' +
+            '</div>';
+
+        document.body.innerHTML = html;
+        bindEvents();
+    }
+
+    // ==================== 事件绑定 ====================
+    function bindEvents() {
+        if (state.step === 0) {
+            var uploadArea = document.getElementById('uploadArea');
+            var fileInput = document.getElementById('fileInput');
+
+            if (uploadArea && fileInput) {
+                uploadArea.onclick = function() {
+                    fileInput.click();
+                };
+
+                // 拖拽支持
+                uploadArea.ondragover = function(e) {
+                    e.preventDefault();
+                    uploadArea.style.borderColor = 'var(--ant-primary)';
+                };
+
+                uploadArea.ondragleave = function(e) {
+                    e.preventDefault();
+                    uploadArea.style.borderColor = '#d9d9d9';
+                };
+
+                uploadArea.ondrop = function(e) {
+                    e.preventDefault();
+                    uploadArea.style.borderColor = '#d9d9d9';
+                    var file = e.dataTransfer.files[0];
+                    if (file) {
+                        handleFile(file);
+                    }
+                };
+
+                fileInput.onchange = function(e) {
+                    if (e.target.files[0]) {
+                        handleFile(e.target.files[0]);
+                    }
+                };
+            }
+
+            // 取消按钮
+            var btnCancel = document.getElementById('btnCancel');
+            if (btnCancel) {
+                btnCancel.onclick = closeWindow;
+            }
+
+            // 下一步按钮
+            var btnNext = document.getElementById('btnNext');
+            if (btnNext) {
+                btnNext.onclick = function() {
+                    state.step = 1;
+                    state.importId = generateUUID();
+                    render();
+                };
+            }
+        }
+
+        else if (state.step === 1) {
+            // 返回按钮
+            var btnBack = document.getElementById('btnBack');
+            if (btnBack) {
+                btnBack.onclick = function() {
+                    state.step = 0;
+                    state.data = [];
+                    render();
+                };
+            }
+
+            // 开始导入
+            var btnImport = document.getElementById('btnImport');
+            if (btnImport) {
+                btnImport.onclick = doImport;
+            }
+        }
+
+        else if (state.step === 3) {
+            // 放弃导入
+            var btnCancelImport = document.getElementById('btnCancelImport');
+            if (btnCancelImport) {
+                btnCancelImport.onclick = function() {
+                    doCommit('CANCEL');
+                };
+            }
+
+            // 仅导入正确行
+            var btnCommitValid = document.getElementById('btnCommitValid');
+            if (btnCommitValid) {
+                btnCommitValid.onclick = function() {
+                    doCommit('VALID_ONLY');
+                };
+            }
+
+            // 确认导入全部
+            var btnCommitAll = document.getElementById('btnCommitAll');
+            if (btnCommitAll) {
+                btnCommitAll.onclick = function() {
+                    doCommit('VALID_ONLY');
+                };
+            }
+        }
+    }
+
+    // ==================== 文件处理 ====================
+    function handleFile(file) {
+        var ext = file.name.split('.').pop().toLowerCase();
+        if (ext !== 'xlsx' && ext !== 'xls') {
+            showMessage('请选择Excel文件 (.xlsx 或 .xls)', 'error');
+            return;
+        }
+
+        // 显示文件信息
+        var fileInfo = document.getElementById('fileInfo');
+        var size = (file.size / 1024).toFixed(2);
+        fileInfo.style.display = 'block';
+        fileInfo.innerHTML = '<div class="batch-file-info">' +
+            '<span class="batch-file-icon">📊</span>' +
+            '<div class="batch-file-detail">' +
+            '<div class="batch-file-name">' + escapeHtml(file.name) + '</div>' +
+            '<div class="batch-file-size">文件大小: ' + size + ' KB</div>' +
+            '</div></div>';
+
+        // 解析Excel
+        parseExcel(file);
+    }
+
+    function parseExcel(file) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                var data = new Uint8Array(e.target.result);
+                var workbook = XLSX.read(data, { type: 'array' });
+                var sheet = workbook.Sheets[workbook.SheetNames[0]];
+                var json = XLSX.utils.sheet_to_json(sheet);
+
+                if (json.length === 0) {
+                    showMessage('Excel文件无数据', 'error');
+                    return;
+                }
+
+                state.data = json;
+                showMessage('解析成功，共 ' + json.length + ' 行数据', 'success');
+
+                // 启用下一步按钮
+                var btnNext = document.getElementById('btnNext');
+                if (btnNext) {
+                    btnNext.disabled = false;
+                }
+            } catch(err) {
+                console.error('Parse error:', err);
+                showMessage('Excel解析失败: ' + err.message, 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // ==================== 导入流程 ====================
+    function doImport() {
+        state.step = 2;
+        render();
+
+        var importId = state.importId;
+        var data = state.data;
+        var batchSize = CONFIG.batchSize;
+        var totalBatches = Math.ceil(data.length / batchSize);
+        var currentBatch = 0;
+
+        function processBatch() {
+            if (currentBatch >= totalBatches) {
+                // 写入完成，开始校验
+                updateProgress(80, '正在校验数据...');
+                doValidate();
+                return;
+            }
+
+            var start = currentBatch * batchSize;
+            var end = Math.min(start + batchSize, data.length);
+            var batchData = data.slice(start, end);
+
+            // 映射字段
+            var mappedRows = batchData.map(function(row, idx) {
+                return mapRowData(row, start + idx + 1, importId);
+            });
+
+            // 更新进度
+            var progress = Math.round((currentBatch / totalBatches) * 70);
+            updateProgress(progress, '正在写入临时表 (' + end + '/' + data.length + ')...');
+
+            // 写入临时表
+            writeToTemp(importId, mappedRows, start + 1, function(err, res) {
+                if (err) {
+                    showMessage('写入临时表失败: ' + err.message, 'error');
+                    state.step = 1;
+                    render();
+                    return;
+                }
+
+                currentBatch++;
+                processBatch();
+            });
+        }
+
+        processBatch();
+    }
+
+    function mapRowData(row, rowNo, importId) {
+        // 存储过程sp_batch_import期望原始Excel列名作为JSON字段
+        // 将前端Excel列名映射为存储过程期望的字段名
+
+        // Excel列名 -> 存储过程期望的JSON字段名映射
+        var storeProcMapping = {
+            '资产编号': '资产编号',
+            '设备名称': '设备名称',
+            '设备类型': '设备类型',
+            '品牌': '品牌',
+            '型号': '规格型号',       // 存储过程期望"规格型号"
+            'SN码': 'SN码',
+            '存放位置': '存放地点',    // 存储过程期望"存放地点"
+            '使用部门': '使用部门',
+            '使用人': '使用人',
+            '资产状态': '资产状态',
+            '数量': '数量',
+            '单价': '单价(元)',       // 存储过程期望"单价(元)"
+            '总价': '总价(元)',       // 存储过程期望"总价(元)"
+            '使用年限': '使用年限(年)', // 存储过程期望"使用年限(年)"
+            '折旧值': '折旧后价值(元)', // 存储过程期望"折旧后价值(元)"
+            '资产来源': '资产来源',
+            '供应商': '供应商',
+            '购置日期': '购置日期',
+            '备注': '备注'
+        };
+
+        var result = {};
+
+        for (var excelCol in row) {
+            if (row.hasOwnProperty(excelCol)) {
+                var value = row[excelCol];
+                // 使用存储过程期望的字段名
+                var targetField = storeProcMapping[excelCol] || excelCol;
+                result[targetField] = value !== undefined ? value : '';
+            }
+        }
+
+        return result;
+    }
+
+    function updateProgress(percent, text) {
+        var progressFill = document.getElementById('progressFill');
+        var progressText = document.getElementById('progressText');
+
+        if (progressFill) {
+            progressFill.style.width = percent + '%';
+        }
+        if (progressText && text) {
+            progressText.textContent = text;
+        }
+    }
+
+    function doValidate() {
+        validateImport(state.importId, function(err, res) {
+            if (err) {
+                showMessage('校验失败: ' + err.message, 'error');
+                state.step = 1;
+                render();
+                return;
+            }
+
+            // 获取统计
+            fetchStats(state.importId, function(err, statsRes) {
+                if (err || !statsRes.data || !statsRes.data[0]) {
+                    showMessage('获取统计失败', 'error');
+                    state.step = 1;
+                    render();
+                    return;
+                }
+
+                var stats = statsRes.data[0];
+                state.stats = {
+                    total: parseInt(stats.total) || 0,
+                    valid_count: parseInt(stats.valid_count) || 0,
+                    error_count: parseInt(stats.error_count) || 0
+                };
+
+                // 如果有错误，获取错误明细
+                if (state.stats.error_count > 0) {
+                    fetchErrors(state.importId, function(err, errorsRes) {
+                        if (!err && errorsRes.data) {
+                            state.errors = errorsRes.data;
+                        }
+                        state.step = 3;
+                        render();
+                    });
+                } else {
+                    state.step = 3;
+                    render();
+                }
+            });
+        });
+    }
+
+    function doCommit(mode) {
+        updateProgress(90, '正在提交...');
+
+        commitImport(state.importId, mode, function(err, res) {
+            if (err) {
+                showMessage('提交失败: ' + err.message, 'error');
+                return;
+            }
+
+            if (mode === 'CANCEL') {
+                showMessage('已取消导入', 'warning');
+                closeWindow();
+            } else {
+                showMessage('导入成功，共 ' + state.stats.valid_count + ' 条', 'success');
+                // 通知父页面刷新
+                if (window.parent && window.parent.refreshList) {
+                    window.parent.refreshList();
+                } else {
+                    closeWindow();
+                }
+            }
+        });
+    }
+
+    function closeWindow() {
+        if (window.parent && window.parent.closeBatchImportModal) {
+            window.parent.closeBatchImportModal();
+        }
+    }
+
+    // ==================== 初始化 ====================
+    function init() {
+        document.body.innerHTML = '<div style="padding:48px;text-align:center;"><span style="display:inline-block;width:24px;height:24px;border:3px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:ad-spin .8s linear infinite;"></span> 页面加载中...</div>' +
+            '<style>@keyframes ad-spin{to{transform:rotate(360deg)}}</style>';
+
+        // 加载SheetJS库
+        var script = document.createElement('script');
+        script.src = 'https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js';
+        script.onload = function() {
+            console.log('SheetJS loaded');
+            render();
+        };
+        script.onerror = function() {
+            showMessage('SheetJS库加载失败', 'error');
+            render();
+        };
+        document.head.appendChild(script);
+    }
+
+    init();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<ToolBars/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[加载中...]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand/>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttMark">
+<TemplateIdAttMark TemplateId="equipment_batch_v1"/>
+</TemplateIdAttMark>
+</WorkBook>

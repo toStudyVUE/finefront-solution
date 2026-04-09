@@ -1,0 +1,557 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebWriteContent>
+<Listener event="afterload">
+<JavaScript class="com.fr.js.JavaScriptImpl">
+<Parameters/>
+<Content>
+<![CDATA[
+/**
+ * 借用申请表单弹窗
+ * 功能：设备借用申请，包含设备选择器弹窗
+ * 提交方式：/api/data + 数据库函数
+ */
+(function() {
+    'use strict';
+
+    // ==================== 路径配置（动态获取，适配不同部署环境） ====================
+    var PATH = {
+        // 当前模板目录
+        currentDir: (function() {
+            var name = FR.remoteEvaluate("=reportName");
+            return name.substring(0, name.lastIndexOf('/') + 1);
+        })(),
+
+        // API基础路径：从servletURL截取前两级
+        apiBase: (function() {
+            var servletURL = FR.remoteEvaluate("=servletURL");
+            var parts = servletURL.split('/');
+            return '/' + parts[1] + '/' + parts[2];
+        })(),
+
+        // 数据层模板路径（展示层在pages/，数据层在data/）
+        getDataTemplate: function(filename) {
+            return this.currentDir.replace('/pages/', '/data/') + filename;
+        },
+
+        // 同目录模板路径
+        getTemplatePath: function(filename) {
+            return this.currentDir + filename;
+        }
+    };
+
+    // ==================== 配置 ====================
+    var CONFIG = {
+        dataTemplate: PATH.getDataTemplate('borrow_data.cpt'),
+        selectorTemplate: PATH.getTemplatePath('equipment_selector.cpt')
+    };
+
+    // ==================== 工具函数 ====================
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>"']/g, function(s) {
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+            return map[s];
+        });
+    }
+
+    function formatDate(dateStr) {
+        if (!dateStr) return '';
+        var d = new Date(dateStr);
+        return d.getFullYear() + '-' +
+               String(d.getMonth()+1).padStart(2,'0') + '-' +
+               String(d.getDate()).padStart(2,'0');
+    }
+
+    function getToday() {
+        var d = new Date();
+        return d.getFullYear() + '-' +
+               String(d.getMonth()+1).padStart(2,'0') + '-' +
+               String(d.getDate()).padStart(2,'0');
+    }
+
+    function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0;
+            var v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    // ==================== 消息提示 ====================
+    function showMessage(text, type) {
+        type = type || 'success';
+        var icons = {
+            success: '✓',
+            error: '✕',
+            warning: '!'
+        };
+        var msgEl = document.createElement('div');
+        msgEl.className = 'ad-message ad-message-' + type;
+        msgEl.innerHTML = '<span class="ad-message-icon">' + icons[type] + '</span><span>' + escapeHtml(text) + '</span>';
+        document.body.appendChild(msgEl);
+
+        setTimeout(function() {
+            msgEl.style.opacity = '0';
+            msgEl.style.transition = 'opacity .3s';
+            setTimeout(function() {
+                if (msgEl.parentNode) {
+                    msgEl.parentNode.removeChild(msgEl);
+                }
+            }, 300);
+        }, 3000);
+    }
+
+    function showLoading(show) {
+        var loadingEl = document.getElementById('loadingOverlay');
+        if (loadingEl) {
+            loadingEl.style.display = show ? 'flex' : 'none';
+        }
+    }
+
+    // ==================== 设备选择器弹窗 ====================
+    window.openSelector = function() {
+        document.getElementById('selectorFrame').src =
+            PATH.apiBase + '/view/report?viewlet=' + CONFIG.selectorTemplate + '&op=write';
+        document.getElementById('selectorMask').style.display = 'flex';
+    };
+
+    window.closeSelectorModal = function() {
+        document.getElementById('selectorMask').style.display = 'none';
+        document.getElementById('selectorFrame').src = '';
+    };
+
+    // 接收设备选择回填
+    window.onEquipmentSelected = function(data) {
+        document.getElementById('inputEquipmentId').value = data.id || '';
+        document.getElementById('inputEquipmentName').value = data.name || '';
+        document.getElementById('inputAssetNo').value = data.asset_no || '';
+        closeSelectorModal();
+    };
+
+    // ==================== 表单校验 ====================
+    function validateForm() {
+        var errors = [];
+
+        var userName = document.getElementById('inputUserName').value.trim();
+        var deptName = document.getElementById('inputDept').value.trim();
+        var equipmentId = document.getElementById('inputEquipmentId').value.trim();
+        var borrowDate = document.getElementById('inputBorrowDate').value;
+        var expectedReturn = document.getElementById('inputExpectedReturn').value;
+
+        if (!userName) errors.push('请输入借用人姓名');
+        if (!deptName) errors.push('请输入部门');
+        if (!equipmentId) errors.push('请选择借用设备');
+        if (!borrowDate) errors.push('请选择借用日期');
+        if (!expectedReturn) errors.push('请选择预计归还日期');
+
+        // 日期校验
+        if (borrowDate && expectedReturn) {
+            var bDate = new Date(borrowDate);
+            var eDate = new Date(expectedReturn);
+            if (eDate < bDate) {
+                errors.push('预计归还日期不能早于借用日期');
+            }
+        }
+
+        return errors;
+    }
+
+    // ==================== 提交处理 ====================
+    function doSubmit() {
+        var errors = validateForm();
+        if (errors.length > 0) {
+            showMessage(errors.join('\n'), 'error');
+            return;
+        }
+
+        var formData = {
+            id: generateUUID(),
+            user_name: document.getElementById('inputUserName').value.trim(),
+            dept_name: document.getElementById('inputDept').value.trim(),
+            equipment_id: document.getElementById('inputEquipmentId').value.trim(),
+            asset_no: document.getElementById('inputAssetNo').value.trim(),
+            borrow_date: document.getElementById('inputBorrowDate').value,
+            expected_return: document.getElementById('inputExpectedReturn').value,
+            remark: document.getElementById('inputRemark').value.trim()
+        };
+
+        // 禁用提交按钮
+        var btnSubmit = document.getElementById('btnSubmit');
+        btnSubmit.disabled = true;
+        btnSubmit.textContent = '提交中...';
+
+        // 调用数据库函数插入借用记录
+        // 使用 fn_insert 通用函数
+        var fields = ['id', 'user_name', 'dept_name', 'equipment_id', 'asset_no', 'borrow_date', 'expected_return_date', 'status', 'remark', 'created_at'];
+        var values = [
+            formData.id,
+            formData.user_name,
+            formData.dept_name,
+            formData.equipment_id,
+            formData.asset_no,
+            formData.borrow_date,
+            formData.expected_return,
+            '借用中',
+            formData.remark || '',
+            getToday()
+        ];
+
+        showLoading(true);
+
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: CONFIG.dataTemplate,
+                datasource_name: 'insert_borrow',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_id', type: 'String', value: formData.id },
+                    { name: 'p_user_name', type: 'String', value: formData.user_name },
+                    { name: 'p_dept_name', type: 'String', value: formData.dept_name },
+                    { name: 'p_equipment_id', type: 'String', value: formData.equipment_id },
+                    { name: 'p_asset_no', type: 'String', value: formData.asset_no },
+                    { name: 'p_borrow_date', type: 'String', value: formData.borrow_date },
+                    { name: 'p_expected_return', type: 'String', value: formData.expected_return },
+                    { name: 'p_remark', type: 'String', value: formData.remark || '' }
+                ]
+            }),
+            success: function(resStr) {
+                showLoading(false);
+                btnSubmit.disabled = false;
+                btnSubmit.textContent = '提交申请';
+
+                try {
+                    var res = typeof resStr === 'string' ? JSON.parse(resStr) : resStr;
+                    if (res.err_code === 0 && res.data && res.data[0]) {
+                        var result = res.data[0];
+                        // 检查返回结果
+                        if (result.result) {
+                            var parsed = JSON.parse(result.result);
+                            if (parsed.success) {
+                                showMessage('借用申请提交成功', 'success');
+                                // 通知父页面刷新列表并关闭弹窗
+                                if (window.parent && window.parent.refreshList) {
+                                    window.parent.refreshList();
+                                }
+                                if (window.parent && window.parent.closeModal) {
+                                    window.parent.closeModal();
+                                }
+                            } else {
+                                showMessage(parsed.message || '提交失败', 'error');
+                            }
+                        } else {
+                            // 直接成功（无result字段表示简单插入成功）
+                            showMessage('借用申请提交成功', 'success');
+                            if (window.parent && window.parent.refreshList) {
+                                window.parent.refreshList();
+                            }
+                            if (window.parent && window.parent.closeModal) {
+                                window.parent.closeModal();
+                            }
+                        }
+                    } else {
+                        showMessage(res.err_msg || '提交失败', 'error');
+                    }
+                } catch(e) {
+                    // 如果解析失败，假设成功
+                    showMessage('借用申请已提交', 'success');
+                    if (window.parent && window.parent.refreshList) {
+                        window.parent.refreshList();
+                    }
+         if (window.parent && window.parent.closeModal) {
+                        window.parent.closeModal();
+                    }
+                }
+            },
+            error: function(xhr) {
+                showLoading(false);
+                btnSubmit.disabled = false;
+                btnSubmit.textContent = '提交申请';
+                showMessage('提交失败: ' + (xhr.responseText || '网络错误'), 'error');
+            }
+        });
+    }
+
+    // ==================== 重置表单 ====================
+    function resetForm() {
+        document.getElementById('inputUserName').value = '';
+        document.getElementById('inputDept').value = '';
+        document.getElementById('inputEquipmentId').value = '';
+        document.getElementById('inputEquipmentName').value = '';
+        document.getElementById('inputAssetNo').value = '';
+        document.getElementById('inputBorrowDate').value = getToday();
+        document.getElementById('inputExpectedReturn').value = '';
+        document.getElementById('inputRemark').value = '';
+    }
+
+    // ==================== 渲染样式 ====================
+    function renderStyles() {
+        return '<style>' +
+            '*{box-sizing:border-box;margin:0;padding:0}' +
+            'html,body{height:auto!important;min-height:100%;overflow-y:auto!important;overflow-x:hidden}' +
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88)}' +
+            '.ad-wrap{padding:24px;min-height:100vh}' +
+            '.ad-card{max-width:600px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);padding:24px}' +
+            '.ad-header{margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #f0f0f0}' +
+            '.ad-title{font-size:18px;font-weight:600;margin-bottom:4px}' +
+            '.ad-subtitle{font-size:13px;color:#8c8c8c}' +
+            '.ad-group{margin-bottom:16px}' +
+            '.ad-row{display:flex;gap:16px}' +
+            '.ad-row .ad-group{flex:1}' +
+            '.ad-label{display:block;margin-bottom:6px;font-weight:500;font-size:14px}' +
+            '.ad-label .required{color:#ff4d4f}' +
+            '.ad-input{width:100%;height:32px;padding:4px 11px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;outline:none}' +
+            '.ad-input:hover{border-color:#1677ff}' +
+            '.ad-input:focus{border-color:#1677ff;box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-input[readonly]{background:#f5f5f5;cursor:not-allowed}' +
+            '.ad-textarea{width:100%;min-height:80px;padding:8px 11px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;outline:none;resize:vertical}' +
+            '.ad-textarea:hover{border-color:#1677ff}' +
+            '.ad-textarea:focus{border-color:#1677ff;box-shadow:0 0 0 2px rgba(22,119,255,.1)}' +
+            '.ad-select-group{display:flex;gap:8px}' +
+            '.ad-select-group .ad-input{flex:1}' +
+            '.ad-btn{height:32px;padding:4px 15px;font-size:14px;border-radius:6px;border:none;cursor:pointer}' +
+            '.ad-btn-primary{background:#1677ff;color:#fff}' +
+            '.ad-btn-primary:hover{background:#4096ff}' +
+            '.ad-btn-primary:disabled{background:#d9d9d9;cursor:not-allowed}' +
+            '.ad-btn-default{background:#fff;color:#262626;border:1px solid #d9d9d9}' +
+            '.ad-btn-default:hover{color:#1677ff;border-color:#1677ff}' +
+            '.ad-btns{display:flex;gap:12px;margin-top:24px;padding-top:16px;border-top:1px solid #f0f0f0}' +
+            '.ad-btns .ad-btn{flex:1}' +
+            // 设备选择器弹窗
+            '.ad-selector-mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:1001}' +
+            '.ad-selector-modal{background:#fff;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.12);width:90%;max-width:800px;height:560px;max-height:80vh;display:flex;flex-direction:column}' +
+            '.ad-selector-header{padding:16px 24px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}' +
+            '.ad-selector-title{font-size:16px;font-weight:600;color:rgba(0,0,0,.88)}' +
+            '.ad-selector-close{width:32px;height:32px;border:none;background:transparent;font-size:20px;color:rgba(0,0,0,.45);cursor:pointer;border-radius:4px;line-height:1}' +
+            '.ad-selector-close:hover{color:rgba(0,0,0,.88);background:#f5f5f5}' +
+            '.ad-selector-body{flex:1;overflow:hidden}' +
+            '.ad-selector-body iframe{width:100%;height:100%;border:none}' +
+            // 消息提示
+            '.ad-message{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:6px;font-size:14px;display:flex;align-items:center;gap:8px;z-index:2000;box-shadow:0 6px 16px rgba(0,0,0,.08);animation:ad-message-in .3s ease;white-space:pre-wrap;max-width:80%}' +
+            '@keyframes ad-message-in{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}' +
+            '.ad-message-success{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}' +
+            '.ad-message-error{background:#fff2f0;border:1px solid #ffccc7;color:#ff4d4f}' +
+            '.ad-message-warning{background:#fffbe6;border:1px solid #ffe58f;color:#faad14}' +
+            '.ad-message-icon{font-size:16px;line-height:1}' +
+            // 加载遮罩
+            '.ad-loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,.7);display:none;align-items:center;justify-content:center;z-index:1000}' +
+            '.ad-loading-content{background:#fff;padding:24px 32px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.1);display:flex;align-items:center;gap:12px;font-size:14px}' +
+            '.ad-loading-spinner{display:inline-block;width:16px;height:16px;border:2px solid #f0f0f0;border-top-color:#1677ff;border-radius:50%;animation:ad-spin .8s linear infinite}' +
+            '@keyframes ad-spin{to{transform:rotate(360deg)}}' +
+            '</style>';
+    }
+
+    // ==================== 渲染表单 ====================
+    function renderForm() {
+        var today = getToday();
+
+        return '<div class="ad-wrap">' +
+            '<div class="ad-card">' +
+            '<div class="ad-header">' +
+            '<div class="ad-title">设备借用申请</div>' +
+            '<div class="ad-subtitle">填写借用信息，选择可用设备</div>' +
+            '</div>' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">借用人<span class="required">*</span></label>' +
+            '<input type="text" class="ad-input" id="inputUserName" placeholder="请输入借用人姓名">' +
+            '</div>' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">部门<span class="required">*</span></label>' +
+            '<input type="text" class="ad-input" id="inputDept" placeholder="请输入所属部门">' +
+            '</div>' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">借用设备<span class="required">*</span></label>' +
+            '<div class="ad-select-group">' +
+            '<input type="text" class="ad-input" id="inputEquipmentName" placeholder="点击选择按钮选择设备" readonly>' +
+            '<input type="hidden" id="inputEquipmentId">' +
+            '<input type="hidden" id="inputAssetNo">' +
+            '<button class="ad-btn ad-btn-primary" onclick="openSelector()">选择</button>' +
+            '</div>' +
+            '</div>' +
+            '<div class="ad-row">' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">借用日期<span class="required">*</span></label>' +
+            '<input type="date" class="ad-input" id="inputBorrowDate" value="' + today + '">' +
+            '</div>' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">预计归还日期<span class="required">*</span></label>' +
+            '<input type="date" class="ad-input" id="inputExpectedReturn">' +
+            '</div>' +
+            '</div>' +
+            '<div class="ad-group">' +
+            '<label class="ad-label">备注</label>' +
+            '<textarea class="ad-textarea" id="inputRemark" placeholder="请输入备注信息（选填）"></textarea>' +
+            '</div>' +
+            '<div class="ad-btns">' +
+            '<button class="ad-btn ad-btn-default" id="btnCancel">取消</button>' +
+            '<button class="ad-btn ad-btn-default" id="btnReset">重置</button>' +
+            '<button class="ad-btn ad-btn-primary" id="btnSubmit">提交申请</button>' +
+            '</div>' +
+            '</div>' +
+            '</div>' +
+            // 设备选择器弹窗
+            '<div class="ad-selector-mask" id="selectorMask">' +
+            '<div class="ad-selector-modal">' +
+            '<div class="ad-selector-header">' +
+            '<span class="ad-selector-title">选择借用设备</span>' +
+            '<button class="ad-selector-close" onclick="closeSelectorModal()">&times;</button>' +
+            '</div>' +
+            '<div class="ad-selector-body">' +
+            '<iframe id="selectorFrame"></iframe>' +
+            '</div>' +
+            '</div>' +
+            '</div>';
+    }
+
+    // ==================== 初始化 ====================
+    function init() {
+        // 创建容器
+        var container = document.createElement('div');
+        container.id = 'formContainer';
+        container.style.cssText = 'position:relative;z-index:10000;pointer-events:auto';
+        container.innerHTML = renderStyles() +
+            '<div class="ad-loading-overlay" id="loadingOverlay">' +
+            '<div class="ad-loading-content">' +
+            '<span class="ad-loading-spinner"></span>' +
+            '<span>提交中...</span>' +
+            '</div>' +
+            '</div>' +
+            renderForm();
+        document.body.insertBefore(container, document.body.firstChild);
+
+        // 隐藏帆软报表容器
+        var style = document.createElement('style');
+        style.innerHTML = '.fr-report{position:absolute;left:-9999px;visibility:hidden}.content-container{height:0!important;overflow:hidden}body>.textbox-container{display:none!important}';
+        document.head.appendChild(style);
+
+        // 绑定事件
+        document.getElementById('btnCancel').onclick = function() {
+            if (window.parent && window.parent.closeModal) {
+                window.parent.closeModal();
+            }
+        };
+
+        document.getElementById('btnReset').onclick = resetForm;
+        document.getElementById('btnSubmit').onclick = doSubmit;
+
+        // 点击遮罩关闭选择器
+        var selectorMask = document.getElementById('selectorMask');
+        if (selectorMask) {
+            selectorMask.onclick = function(e) {
+                if (e.target === selectorMask) {
+                    closeSelectorModal();
+                }
+            };
+        }
+    }
+
+    init();
+})();
+]]>
+</Content>
+</JavaScript>
+</Listener>
+<ToolBars/>
+<EditRowColor setColor="true"/>
+<SelectedColor>
+<color>
+<FineColor color="-10033153" hor="-1" ver="-1"/>
+</color>
+</SelectedColor>
+<WebWrite SheetPosition="3"/>
+<RptLocation isShowAtLeft="true"/>
+<UnloadCheck/>
+<ShowWidgets/>
+<OtherAttr autoStash="false"/>
+</WebWriteContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR F="0" T="0"/>
+<FR/>
+<HC/>
+<FC/>
+<UPFCR COLUMN="false" ROW="true"/>
+<USE REPEAT="true" PAGE="true" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900">
+<![CDATA[723900,723900,723900,723900,723900,723900,723900,723900,723900,723900,723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200">
+<![CDATA[2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200,2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0"/>
+<CellPageAttr/>
+<Expand>
+<cellSortAttr/>
+</Expand>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color>
+<FineColor color="-1" hor="-1" ver="-1"/>
+</color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttrMark">
+<TemplateIdAttMark TemplateId="borrow_apply_v1"/>
+</TemplateIdAttMark>
+</WorkBook>
