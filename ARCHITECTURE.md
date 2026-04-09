@@ -899,3 +899,4 @@ function showGuideBubble(guideId) {
 | sp_batch_import.sql | 批量写入临时表 |
 | sp_equipment_import_validate.sql | 导入校验 |
 | sp_equipment_import_commit.sql | 导入提交 |
+| user_preference.sql | 用户偏好表 |
