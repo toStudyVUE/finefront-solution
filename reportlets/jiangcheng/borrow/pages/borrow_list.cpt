@@ -479,12 +479,17 @@
             '.ad-message-icon{font-size:16px;line-height:1}' +
             '.ad-tab-content{display:none}' +
             '.ad-tab-content.active{display:block}' +
-            '</style>';
+            '.ad-guide-btn{position:fixed;top:16px;right:16px;z-index:999;padding:8px 16px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 4px 15px rgba(102,126,234,.4);transition:all .3s}' +
+            '.ad-guide-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(102,126,234,.5)}' +
+            '</style>' +
+            '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.css.min.css"/>' +
+            '<script src="https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.js.iife.js"><\/script>';
     }
 
     function renderHeader() {
-        return '<div class="ad-page-header">' +
+        return '<div class="ad-page-header" style="display:flex;justify-content:space-between;align-items:center">' +
             '<h1 class="ad-page-title">借用管理</h1>' +
+            '<button class="ad-guide-btn" id="btnGuide">功能引导</button>' +
             '</div>';
     }
 
@@ -1268,14 +1273,116 @@
                             bindEquipmentFilterEvents();
                             bindBorrowFilterEvents();
                             bindModalEvents();
+                            bindGuideEvent();
 
                             // 加载设备数据
                             loadEquipmentData();
+
+                            // 首次访问自动启动引导
+                            if (!localStorage.getItem('guide_shown_borrow_list')) {
+                                setTimeout(startGuide, 1000);
+                                localStorage.setItem('guide_shown_borrow_list', 'true');
+                            }
                         });
                     });
                 });
             });
         });
+    }
+
+    // ==================== 引导功能 ====================
+    function bindGuideEvent() {
+        var btn = document.getElementById('btnGuide');
+        if (btn) {
+            btn.onclick = startGuide;
+        }
+    }
+
+    function startGuide() {
+        // 等待Driver.js加载完成
+        if (typeof window.driver === 'undefined') {
+            // 动态加载
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.js.iife.js';
+            script.onload = function() {
+                initGuide();
+            };
+            document.head.appendChild(script);
+            return;
+        }
+        initGuide();
+    }
+
+    function initGuide() {
+        var driver = window.driver.createDriver({
+            animate: true,
+            showProgress: true,
+            progressText: '{{current}} / {{total}}',
+            nextBtnText: '下一步',
+            prevBtnText: '上一步',
+            doneBtnText: '完成'
+        });
+
+        driver.defineSteps([
+            {
+                element: '#tabEquipment',
+                popover: {
+                    title: '设备管理',
+                    description: '当前在设备管理页面，可以查看和管理所有设备资产。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#tabBorrow',
+                popover: {
+                    title: '借用记录',
+                    description: '点击切换到借用记录页面，查看和管理借用情况。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#equipmentStatsRow',
+                popover: {
+                    title: '设备统计',
+                    description: '显示可用设备、已借出、维修中的设备数量统计。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#filterKeyword',
+                popover: {
+                    title: '搜索筛选',
+                    description: '输入资产编号或设备名称进行搜索，支持按类型、状态筛选。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#btnAddEquipment',
+                popover: {
+                    title: '新增设备',
+                    description: '点击新增单个设备，填写设备信息后保存。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#btnBatchImport',
+                popover: {
+                    title: '批量导入',
+                    description: '支持Excel批量导入设备数据，适合一次性添加大量设备。',
+                    side: 'bottom'
+                }
+            },
+            {
+                element: '#equipmentTable',
+                popover: {
+                    title: '设备列表',
+                    description: '设备数据表格，点击表头可排序，操作列可编辑或删除设备。',
+                    side: 'top'
+                }
+            }
+        ]);
+
+        driver.drive();
     }
 
     init();
