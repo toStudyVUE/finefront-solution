@@ -44,6 +44,9 @@
             return '/' + parts[1] + '/' + parts[2];
         })(),
 
+        // 静态资源路径
+        libBase: '/webroot/help/lib/',
+
         // 数据层模板路径（展示层在pages/，数据层在data/）
         getDataTemplate: function(filename) {
             return this.currentDir.replace('/pages/', '/data/') + filename;
@@ -52,6 +55,15 @@
         // 同目录模板路径
         getTemplatePath: function(filename) {
             return this.currentDir + filename;
+        },
+
+        // 获取当前用户ID
+        getCurrentUserId: function() {
+            try {
+                return FR.remoteEvaluate("=$fr_username") || 'anonymous';
+            } catch (e) {
+                return 'anonymous';
+            }
         }
     };
 
@@ -479,17 +491,12 @@
             '.ad-message-icon{font-size:16px;line-height:1}' +
             '.ad-tab-content{display:none}' +
             '.ad-tab-content.active{display:block}' +
-            '.ad-guide-btn{position:fixed;top:16px;right:16px;z-index:999;padding:8px 16px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:20px;cursor:pointer;font-size:13px;box-shadow:0 4px 15px rgba(102,126,234,.4);transition:all .3s}' +
-            '.ad-guide-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(102,126,234,.5)}' +
-            '</style>' +
-            '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.css.min.css"/>' +
-            '<script src="https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.js.iife.js"><\/script>';
+            '</style>';
     }
 
     function renderHeader() {
-        return '<div class="ad-page-header" style="display:flex;justify-content:space-between;align-items:center">' +
+        return '<div class="ad-page-header">' +
             '<h1 class="ad-page-title">借用管理</h1>' +
-            '<button class="ad-guide-btn" id="btnGuide">功能引导</button>' +
             '</div>';
     }
 
@@ -1273,16 +1280,12 @@
                             bindEquipmentFilterEvents();
                             bindBorrowFilterEvents();
                             bindModalEvents();
-                            bindGuideEvent();
 
                             // 加载设备数据
                             loadEquipmentData();
 
-                            // 首次访问自动启动引导
-                            if (!localStorage.getItem('guide_shown_borrow_list')) {
-                                setTimeout(startGuide, 1000);
-                                localStorage.setItem('guide_shown_borrow_list', 'true');
-                            }
+                            // 初始化引导功能
+                            initGuideFeature();
                         });
                     });
                 });
@@ -1291,30 +1294,123 @@
     }
 
     // ==================== 引导功能 ====================
-    function bindGuideEvent() {
+    var GUIDE_ID = 'guide_borrow_list';
+    var driverInstance = null;
+
+    function initGuideFeature() {
+        // 添加引导按钮到页面
+        addGuideButton();
+
+        // 检查是否首次访问，显示提示气泡
+        checkAndShowGuideBubble();
+    }
+
+    function addGuideButton() {
+        var btn = document.createElement('button');
+        btn.id = 'btnGuide';
+        btn.className = 'ad-btn ad-btn-default';
+        btn.style.cssText = 'margin-left:12px;';
+        btn.innerHTML = '📖 引导';
+        btn.title = '查看功能引导';
+        btn.onclick = function() {
+            loadDriverAndStart();
+        };
+
+        var pageTitle = document.querySelector('.ad-page-title');
+        if (pageTitle && pageTitle.parentNode) {
+            pageTitle.parentNode.style.display = 'flex';
+            pageTitle.parentNode.style.justifyContent = 'space-between';
+            pageTitle.parentNode.style.alignItems = 'center';
+            pageTitle.parentNode.appendChild(btn);
+        }
+    }
+
+    function checkAndShowGuideBubble() {
+        // 从数据库检查是否已读过引导
+        checkGuideRead(function(hasRead) {
+            if (!hasRead) {
+                showGuideBubble();
+            }
+        });
+    }
+
+    function showGuideBubble() {
+        var bubble = document.createElement('div');
+        bubble.id = 'guideBubble';
+        bubble.innerHTML = '<span style="margin-right:8px;">✨ 新功能提示</span><span style="text-decoration:underline;cursor:pointer;" onclick="this.parentNode.click()">点击查看引导</span>';
+        bubble.style.cssText = 'position:fixed;top:70px;right:24px;background:#1677ff;color:#fff;padding:10px 16px;border-radius:6px;font-size:13px;z-index:1000;box-shadow:0 4px 12px rgba(22,119,255,.3);cursor:pointer;';
+
+        bubble.onclick = function() {
+            document.body.removeChild(bubble);
+            loadDriverAndStart();
+        };
+
+        document.body.appendChild(bubble);
+
+        // 10秒后自动隐藏气泡，变成按钮上的小红点
+        setTimeout(function() {
+            if (document.getElementById('guideBubble')) {
+                document.body.removeChild(bubble);
+                showGuideBadge();
+            }
+        }, 10000);
+    }
+
+    function showGuideBadge() {
         var btn = document.getElementById('btnGuide');
         if (btn) {
-            btn.onclick = startGuide;
+            var badge = document.createElement('span');
+            badge.id = 'guideBadge';
+            badge.style.cssText = 'position:absolute;top:-4px;right:-4px;width:8px;height:8px;background:#ff4d4f;border-radius:50%;';
+            btn.style.position = 'relative';
+            btn.appendChild(badge);
         }
+    }
+
+    function hideGuideBadge() {
+        var badge = document.getElementById('guideBadge');
+        if (badge) {
+            badge.parentNode.removeChild(badge);
+        }
+    }
+
+    function loadDriverAndStart() {
+        hideGuideBadge();
+
+        // 检查是否已加载
+        if (typeof window.driver !== 'undefined') {
+            startGuide();
+            return;
+        }
+
+        // 加载CSS
+        if (!document.getElementById('driverCss')) {
+            var link = document.createElement('link');
+            link.id = 'driverCss';
+            link.rel = 'stylesheet';
+            link.href = PATH.libBase + 'driver/driver.min.css';
+            document.head.appendChild(link);
+        }
+
+        // 加载JS
+        var script = document.createElement('script');
+        script.src = PATH.libBase + 'driver/driver.min.js';
+        script.onload = function() {
+            startGuide();
+        };
+        script.onerror = function() {
+            showMessage('引导资源加载失败，请检查网络', 'error');
+        };
+        document.head.appendChild(script);
     }
 
     function startGuide() {
-        // 等待Driver.js加载完成
         if (typeof window.driver === 'undefined') {
-            // 动态加载
-            var script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/driver.js@1.0.1/dist/driver.js.iife.js';
-            script.onload = function() {
-                initGuide();
-            };
-            document.head.appendChild(script);
+            showMessage('引导组件未加载', 'error');
             return;
         }
-        initGuide();
-    }
 
-    function initGuide() {
-        var driver = window.driver.createDriver({
+        driverInstance = window.driver.createDriver({
             animate: true,
             showProgress: true,
             progressText: '{{current}} / {{total}}',
@@ -1323,7 +1419,15 @@
             doneBtnText: '完成'
         });
 
-        driver.defineSteps([
+        driverInstance.defineSteps([
+            {
+                popover: {
+                    title: '欢迎使用借用管理系统',
+                    description: '本系统用于管理设备借用全流程，包括设备管理、借用申请、归还操作。点击"下一步"了解详细功能。',
+                    side: 'bottom',
+                    align: 'center'
+                }
+            },
             {
                 element: '#tabEquipment',
                 popover: {
@@ -1336,15 +1440,15 @@
                 element: '#tabBorrow',
                 popover: {
                     title: '借用记录',
-                    description: '点击切换到借用记录页面，查看和管理借用情况。',
+                    description: '点击切换到借用记录页面，查看和管理借用情况，包括借用中、已归还、逾期的记录。',
                     side: 'bottom'
                 }
             },
             {
                 element: '#equipmentStatsRow',
                 popover: {
-                    title: '设备统计',
-                    description: '显示可用设备、已借出、维修中的设备数量统计。',
+                    title: '统计概览',
+                    description: '快速了解可用设备、已借出、维修中的数量统计。',
                     side: 'bottom'
                 }
             },
@@ -1360,7 +1464,7 @@
                 element: '#btnAddEquipment',
                 popover: {
                     title: '新增设备',
-                    description: '点击新增单个设备，填写设备信息后保存。',
+                    description: '点击新增单个设备，填写资产编号、名称、类型等信息后保存。',
                     side: 'bottom'
                 }
             },
@@ -1376,13 +1480,72 @@
                 element: '#equipmentTable',
                 popover: {
                     title: '设备列表',
-                    description: '设备数据表格，点击表头可排序，操作列可编辑或删除设备。',
+                    description: '设备数据表格，点击表头可排序，操作列可编辑或删除设备。如有疑问可随时点击"引导"按钮重新查看。',
                     side: 'top'
                 }
             }
         ]);
 
-        driver.drive();
+        driverInstance.drive();
+
+        // 监听引导完成事件
+        var checkInterval = setInterval(function() {
+            if (!document.querySelector('.driver-active-element')) {
+                clearInterval(checkInterval);
+                markGuideRead();
+            }
+        }, 500);
+    }
+
+    // 检查引导是否已读
+    function checkGuideRead(callback) {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_get',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID }
+                ]
+            }),
+            success: function(res) {
+                try {
+                    var data = typeof res === 'string' ? JSON.parse(res) : res;
+                    var hasRead = data.data && data.data.length > 0;
+                    callback(hasRead);
+                } catch (e) {
+                    callback(false);
+                }
+            },
+            error: function() {
+                callback(false);
+            }
+        });
+    }
+
+    // 标记引导已读
+    function markGuideRead() {
+        $.ajax({
+            url: PATH.apiBase + '/api/data',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                report_path: 'common/data/common_data.cpt',
+                datasource_name: 'user_pref_set',
+                page_number: -1,
+                page_size: -1,
+                parameters: [
+                    { name: 'p_user_id', type: 'String', value: PATH.getCurrentUserId() },
+                    { name: 'p_key', type: 'String', value: GUIDE_ID },
+                    { name: 'p_value', type: 'String', value: 'true' }
+                ]
+            })
+        });
     }
 
     init();
