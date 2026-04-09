@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WorkBook xmlVersion="20211223" releaseVersion="11.5.0">
+<TableDataMap>
+<TableData name="dummy" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters/>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT 1 as id]]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<TableData name="user_pref_get" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_user_id"/></Parameter>
+<Parameter><Attributes name="p_key"/></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[SELECT pref_value FROM user_preference WHERE user_id = '${p_user_id}' AND pref_key = '${p_key}']]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<TableData name="user_pref_set" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_user_id"/></Parameter>
+<Parameter><Attributes name="p_key"/></Parameter>
+<Parameter><Attributes name="p_value"/></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[INSERT INTO user_preference (user_id, pref_key, pref_value) VALUES ('${p_user_id}', '${p_key}', '${p_value}') ON DUPLICATE KEY UPDATE pref_value = '${p_value}']]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+
+<TableData name="user_pref_delete" class="com.fr.data.impl.DBTableData">
+<Desensitizations desensitizeOpen="false"/>
+<Parameters>
+<Parameter><Attributes name="p_user_id"/></Parameter>
+<Parameter><Attributes name="p_key"/></Parameter>
+</Parameters>
+<Attributes maxMemRowCount="-1"/>
+<Connection class="com.fr.data.impl.NameDatabaseConnection">
+<DatabaseName><![CDATA[common_db]]></DatabaseName>
+</Connection>
+<Query><![CDATA[DELETE FROM user_preference WHERE user_id = '${p_user_id}' AND pref_key = '${p_key}']]></Query>
+<PageQuery><![CDATA[]]></PageQuery>
+</TableData>
+</TableDataMap>
+
+<ReportWebAttr>
+<ServerPrinter/>
+<WebPageContent>
+<ToolBars/>
+<WebPage isPage="true" showAsImage="false" autoScale="false" tdHeavy="false" pageFixedRow="false" pageFixedRowCount="30"/>
+</WebPageContent>
+</ReportWebAttr>
+
+<ReportFitAttr fitStateInPC="2" fitFont="false" minFontSize="0"/>
+<ElementCaseMobileAttr>
+<ElementCaseMobileAttrProvider horizontal="1" vertical="1" zoom="true" refresh="false" isUseHTML="false" isMobileCanvasSize="false" appearRefresh="false" allowFullScreen="false" allowDoubleClickOrZoom="true" functionalWhenUnactivated="false"/>
+</ElementCaseMobileAttr>
+
+<Report class="com.fr.report.worksheet.WorkSheet" name="sheet1">
+<ReportPageAttr>
+<HR/>
+<FR/>
+<HC/>
+<FC/>
+<USE REPEAT="false" PAGE="false" WRITE="false"/>
+</ReportPageAttr>
+<ColumnPrivilegeControl/>
+<RowPrivilegeControl/>
+<RowHeight defaultValue="723900"><![CDATA[723900]]></RowHeight>
+<ColumnWidth defaultValue="2743200"><![CDATA[2743200]]></ColumnWidth>
+<CellElementList>
+<C c="0" r="0" s="0">
+<O><![CDATA[【公共数据层】用户偏好管理]]></O>
+<PrivilegeControl/>
+<CellGUIAttr adjustmode="0" showAsDefault="true"/>
+<CellPageAttr/>
+<Expand/>
+</C>
+</CellElementList>
+<ReportAttrSet>
+<ReportSettings headerHeight="0" footerHeight="0">
+<PaperSetting/>
+<FollowingTheme background="false"/>
+<Background name="ColorBackground">
+<color><FineColor color="-1" hor="-1" ver="-1"/></color>
+</Background>
+</ReportSettings>
+</ReportAttrSet>
+<PrivilegeControl/>
+</Report>
+
+<ReportParameterAttr>
+<Attributes showWindow="false" delayPlaying="false" windowPosition="1" align="0" useParamsTemplate="false" currentIndex="0"/>
+<PWTitle><![CDATA[参数]]></PWTitle>
+</ReportParameterAttr>
+
+<StyleList>
+<Style horizontal_alignment="0" imageLayout="1">
+<FRFont name="SimSun" style="0" size="72"/>
+<Background name="NullBackground"/>
+<Border/>
+</Style>
+</StyleList>
+<DesensitizationList/>
+<DesignerVersion DesignerVersion="LAA"/>
+<PreviewType PreviewType="0"/>
+<TemplateThemeAttrMark class="com.fr.base.iofile.attr.TemplateThemeAttrMark">
+<TemplateThemeAttrMark name="兼容主题" dark="false"/>
+</TemplateThemeAttrMark>
+<ForkIdAttrMark class="com.fr.base.iofile.attr.ForkIdAttrMark">
+<ForkIdAttrMark forkId="common_data_v1"/>
+</ForkIdAttrMark>
+<TemplateIdAttMark class="com.fr.base.iofile.attr.TemplateIdAttMark">
+<TemplateIdAttMark TemplateId="common_data_v1"/>
+</TemplateIdAttMark>
+</WorkBook>

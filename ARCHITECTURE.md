@@ -1,6 +1,6 @@
 # 帆软加壳前端方案架构
 
-> 版本：3.0
+> 版本：3.1
 > 更新时间：2026-04-09
 
 ## 一、核心理念
@@ -649,6 +649,209 @@ function parseProxyResponse(res) {
 
 ---
 
+## 十二、页面引导功能
+
+### 12.1 概述
+
+对于复杂功能页面，提供交互式引导帮助用户快速上手。引导功能基于 Driver.js 实现，支持分步骤高亮元素并显示说明。
+
+### 12.2 设计原则
+
+1. **手动触发 + 首次提示**：不自动全屏启动引导，避免打断用户操作
+2. **用户状态持久化**：引导状态存储在数据库，跨设备一致
+3. **按功能ID管理**：每个功能模块独立ID，便于扩展
+4. **本地资源依赖**：内网环境，所有资源下载到本地
+
+### 12.3 目录结构
+
+```
+reportlets/
+├── common/
+│   ├── data/
+│   │   └── common_data.cpt     # 公共数据层（用户偏好）
+│   └── lib/
+│       └── driver/             # Driver.js 本地资源
+│           ├── driver.min.js
+│           └── driver.min.css
+
+webapps/webroot/help/lib/driver/  # 静态资源访问路径
+```
+
+### 12.4 数据库设计
+
+**用户偏好表**：
+```sql
+CREATE TABLE user_preference (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(50) NOT NULL COMMENT '用户ID',
+    pref_key VARCHAR(100) NOT NULL COMMENT '偏好键',
+    pref_value VARCHAR(500) COMMENT '偏好值',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_pref (user_id, pref_key)
+);
+```
+
+**功能ID命名规范**：`guide_{模块}_{页面}`
+
+| 页面 | 功能ID |
+|------|--------|
+| borrow_list.cpt | `guide_borrow_list` |
+| borrow_apply.cpt | `guide_borrow_apply` |
+| equipment_form.cpt | `guide_equipment_form` |
+
+### 12.5 公共数据层模板
+
+**路径**：`common/data/common_data.cpt`
+
+| 数据集 | 功能 | 参数 |
+|--------|------|------|
+| user_pref_get | 获取用户偏好 | p_user_id, p_key |
+| user_pref_set | 设置用户偏好 | p_user_id, p_key, p_value |
+| user_pref_delete | 删除用户偏好 | p_user_id, p_key |
+
+### 12.6 前端调用流程
+
+```javascript
+// 1. 检查引导状态
+function checkGuideStatus(guideId, callback) {
+    $.ajax({
+        url: PATH.apiBase + '/api/data',
+        type: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            report_path: 'common/data/common_data.cpt',
+            datasource_name: 'user_pref_get',
+            page_number: -1,
+            page_size: -1,
+            parameters: [
+                { name: 'p_user_id', type: 'String', value: currentUserId },
+                { name: 'p_key', type: 'String', value: guideId }
+            ]
+        }),
+        success: function(res) {
+            var data = typeof res === 'string' ? JSON.parse(res) : res;
+            var shown = data.data && data.data.length > 0;
+            callback(shown);
+        }
+    });
+}
+
+// 2. 标记引导已读
+function markGuideRead(guideId) {
+    $.ajax({
+        url: PATH.apiBase + '/api/data',
+        type: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            report_path: 'common/data/common_data.cpt',
+            datasource_name: 'user_pref_set',
+            page_number: -1,
+            page_size: -1,
+            parameters: [
+                { name: 'p_user_id', type: 'String', value: currentUserId },
+                { name: 'p_key', type: 'String', value: guideId },
+                { name: 'p_value', type: 'String', value: 'true' }
+            ]
+        })
+    });
+}
+
+// 3. 启动引导
+function startGuide() {
+    var driver = window.driver.createDriver({
+        animate: true,
+        showProgress: true,
+        progressText: '{{current}} / {{total}}',
+        nextBtnText: '下一步',
+        prevBtnText: '上一步',
+        doneBtnText: '完成'
+    });
+
+    driver.defineSteps([
+        { element: '#element1', popover: { title: '标题', description: '说明', side: 'bottom' } },
+        // ... 更多步骤
+    ]);
+
+    driver.drive();
+
+    // 引导完成后标记已读
+    driver.on('destroyed', function() {
+        markGuideRead('guide_borrow_list');
+    });
+}
+```
+
+### 12.7 资源加载
+
+**本地资源路径**：
+```javascript
+var libBase = '/webroot/help/lib/driver/';
+
+// 加载CSS
+function loadCSS(href) {
+    var link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = href;
+    document.head.appendChild(link);
+}
+
+// 加载JS
+function loadScript(src, callback) {
+    var script = document.createElement('script');
+    script.src = src;
+    script.onload = callback;
+    document.head.appendChild(script);
+}
+
+// 使用
+loadCSS(libBase + 'driver.min.css');
+loadScript(libBase + 'driver.min.js', function() {
+    // Driver.js 加载完成，可以启动引导
+});
+```
+
+### 12.8 首次提示气泡
+
+当用户首次访问页面时，显示一个小气泡提示，引导用户点击查看功能介绍：
+
+```javascript
+function showGuideBubble(guideId) {
+    var bubble = document.createElement('div');
+    bubble.id = 'guideBubble';
+    bubble.innerHTML = '新功能！点击查看操作引导 →';
+    bubble.style.cssText = 'position:fixed;top:60px;right:16px;background:#1677ff;color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;z-index:1000;box-shadow:0 2px 8px rgba(0,0,0,.15);';
+    bubble.onclick = function() {
+        document.body.removeChild(bubble);
+        startGuide();
+    };
+    document.body.appendChild(bubble);
+}
+```
+
+### 12.9 样式规范
+
+引导按钮应与页面整体风格一致（Ant Design）：
+
+```css
+.ad-guide-btn {
+    padding: 4px 15px;
+    height: 32px;
+    font-size: 14px;
+    border-radius: 6px;
+    border: 1px solid #d9d9d9;
+    background: #fff;
+    color: rgba(0,0,0,.88);
+    cursor: pointer;
+}
+.ad-guide-btn:hover {
+    color: #1677ff;
+    border-color: #1677ff;
+}
+```
+
+---
+
 ## 十三、关键注意事项
 
 1. **URL必须带 `op=write`**：所有展示模板访问时必须带 `&op=write` 参数，否则 `afterload` 事件不执行
@@ -672,6 +875,7 @@ function parseProxyResponse(res) {
 | 类型 | 路径 | 说明 |
 |------|------|------|
 | 公共模板 | `api/api_agent.cpt` | 外部API代理 |
+| 公共数据层 | `common/data/common_data.cpt` | 用户偏好管理 |
 | 数据层 | `jiangcheng/borrow/data/borrow_data.cpt` | 数据操作模板 |
 | 展示层 | `jiangcheng/borrow/pages/borrow_list.cpt` | 借用管理列表 |
 | | `jiangcheng/borrow/pages/borrow_apply.cpt` | 借用申请弹窗 |
